@@ -1,0 +1,74 @@
+apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: lewm-pusht-train
+spec:
+  pytorchReplicaSpecs:
+    Master:
+      replicas: 1
+      restartPolicy: Never
+      template:
+        spec:
+          containers:
+            - name: pytorch
+              image: quay.io/YOUR_ORG/lewm-train:latest
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/bash", "-lc"]
+              args:
+                - |
+                  set -euo pipefail
+
+                  # Official collection:
+                  # https://huggingface.co/collections/quentinll/lewm
+                  export STABLEWM_HOME=/mnt/lewm
+                  export LOCAL_DATASET_DIR=/mnt/lewm
+                  export HF_HOME=/mnt/lewm/hf-cache
+
+                  mkdir -p /mnt/lewm/raw/lewm-pusht
+                  mkdir -p /mnt/lewm/checkpoints
+
+                  if [ ! -f /mnt/lewm/pusht_expert_train.h5 ]; then
+                    echo "Downloading LeWM PushT dataset from Hugging Face..."
+                    HF_CLI=hf
+                    if ! command -v hf >/dev/null 2>&1; then
+                      HF_CLI=huggingface-cli
+                    fi
+                    $HF_CLI download quentinll/lewm-pusht \
+                      --repo-type dataset \
+                      --local-dir /mnt/lewm/raw/lewm-pusht
+
+                    echo "Decompressing dataset..."
+                    zstd -d -f \
+                      /mnt/lewm/raw/lewm-pusht/pusht_expert_train.h5.zst \
+                      -o /mnt/lewm/pusht_expert_train.h5
+                  else
+                    echo "Dataset already exists at /mnt/lewm/pusht_expert_train.h5. Skipping download."
+                  fi
+
+                  echo "Starting LeWM training..."
+                  python train.py \
+                    data=hf_pusht \
+                    launcher=nerc \
+                    output_model_name=pusht/lewm
+              envFrom:
+                - secretRef:
+                    name: hf-token
+                    optional: true
+              resources:
+                requests:
+                  cpu: "4"
+                  memory: "32Gi"
+                  nvidia.com/gpu: "1"
+                limits:
+                  cpu: "8"
+                  memory: "64Gi"
+                  nvidia.com/gpu: "1"
+              volumeMounts:
+                - name: lewm-storage
+                  mountPath: /mnt/lewm
+          volumes:
+            - name: lewm-storage
+              persistentVolumeClaim:
+                claimName: lewm-storage
+  runPolicy:
+    suspend: false

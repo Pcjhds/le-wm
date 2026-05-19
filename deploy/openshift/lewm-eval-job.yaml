@@ -1,0 +1,40 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: lewm-pusht-eval
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: eval
+          image: quay.io/YOUR_ORG/lewm-train:latest
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+
+              export STABLEWM_HOME=/mnt/lewm
+              export LOCAL_DATASET_DIR=/mnt/lewm
+
+              python eval.py \
+                --config-name=pusht.yaml \
+                policy=pusht/lewm/weights_epoch_100.pt
+          resources:
+            requests:
+              cpu: "2"
+              memory: "16Gi"
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "4"
+              memory: "32Gi"
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: lewm-storage
+              mountPath: /mnt/lewm
+      volumes:
+        - name: lewm-storage
+          persistentVolumeClaim:
+            claimName: lewm-storage

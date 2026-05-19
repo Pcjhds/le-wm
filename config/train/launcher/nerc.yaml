@@ -1,0 +1,29 @@
+# @package _global_
+# NERC OpenShift AI launcher configuration.
+
+defaults:
+  - override /hydra/launcher: basic
+
+trainer:
+  accelerator: gpu
+  devices: 1
+  precision: bf16
+  max_epochs: 100
+  gradient_clip_val: 1.0
+
+loader:
+  batch_size: 64
+  num_workers: 4
+  persistent_workers: true
+  prefetch_factor: 2
+  pin_memory: true
+
+wandb:
+  enabled: false
+  config:
+    entity: lewm
+    project: lewm
+    name: ${output_model_name}
+    id: ${subdir}
+    resume: allow
+    log_model: false

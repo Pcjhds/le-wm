@@ -1,0 +1,951 @@
+# LeWM 在 NERC OpenShift AI 上自动下载 Hugging Face 数据并训练的操作流程
+
+本文档说明如何把当前 LeWM 项目部署到 NERC Red Hat OpenShift AI 中，让训练任务在服务器端自动下载 Hugging Face 数据集、解压、训练、保存 checkpoint，并在训练后调用模型做测试。
+
+官方 Hugging Face collection：
+
+```text
+https://huggingface.co/collections/quentinll/lewm
+```
+
+注意：collection 中同时包含 dataset repo 和同名 model repo。下载训练数据时必须使用 `--repo-type dataset`，例如：
+
+```bash
+hf download quentinll/lewm-pusht --repo-type dataset --local-dir /mnt/lewm/raw/lewm-pusht
+```
+
+## 1. 目标流程
+
+整体流程如下：
+
+```text
+NERC OpenShift AI Data Science Project
+  -> PVC 持久化存储
+  -> 自定义训练镜像
+  -> PyTorchJob 或 Data Science Pipeline
+  -> 训练 Pod 启动
+  -> 自动从 Hugging Face 下载 .h5.zst 或 .tar.zst 数据
+  -> 解压为 stable_worldmodel 可读取的 .h5 数据
+  -> python train.py data=hf_pusht launcher=nerc
+  -> 保存 weights_epoch_*.pt 和 config.json
+  -> python eval.py 调用训练好的模型测试
+```
+
+推荐先使用 `PyTorchJob` 跑通单次训练；确认无误后，再把相同逻辑封装成 OpenShift AI Data Science Pipeline，并设置 recurring / cron run 实现周期性自主训练。
+
+## 2. 前置条件
+
+需要具备以下条件：
+
+1. 已经有 NERC OpenShift / OpenShift AI 账号和对应 resource allocation。
+2. 已经创建或拥有一个 Data Science Project。
+3. 项目 namespace 中有 GPU quota，例如 A100、H100 或 V100。
+4. 训练 Pod 可以访问 Hugging Face。
+5. 有足够大的 PVC 保存数据和模型。
+6. 能够构建并推送自定义 container image。
+
+建议 PVC 容量：
+
+```text
+PushT 数据压缩包约 13GB，解压后更大。
+建议最少 100Gi；如果还要保留多个 epoch checkpoint，建议 200Gi 或更高。
+```
+
+## 3. 目录约定
+
+在训练 Pod 中建议把 PVC 挂载到：
+
+```text
+/mnt/lewm
+```
+
+并设置：
+
+```bash
+export STABLEWM_HOME=/mnt/lewm
+export LOCAL_DATASET_DIR=/mnt/lewm
+export HF_HOME=/mnt/lewm/hf-cache
+```
+
+训练后会产生类似目录：
+
+```text
+/mnt/lewm/
+  pusht_expert_train.h5
+  raw/
+    lewm-pusht/
+      pusht_expert_train.h5.zst
+  hf-cache/
+  checkpoints/
+    pusht/
+      lewm/
+        config.json
+        weights_epoch_1.pt
+        weights_epoch_2.pt
+        ...
+```
+
+## 4. 需要新增或修改的 YAML 文件
+
+本仓库已经新增这些文件：
+
+```text
+config/train/data/hf_pusht.yaml
+config/train/data/hf_tworoom.yaml
+config/train/data/hf_cube.yaml
+config/train/data/hf_reacher.yaml
+config/train/launcher/nerc.yaml
+deploy/openshift/pvc.yaml
+deploy/openshift/hf-secret.example.yaml
+deploy/openshift/lewm-train-pytorchjob.yaml
+deploy/openshift/lewm-train-job.yaml
+deploy/openshift/lewm-eval-job.yaml
+```
+
+如果需要自动周期性训练，再新增：
+
+```text
+pipelines/lewm_train_pipeline.py
+pipelines/lewm_train_pipeline.yaml
+```
+
+其中 `pipeline.yaml` 不建议手写，应该由 Kubeflow Pipelines SDK 从 `pipeline.py` 编译生成。
+
+## 5. Hugging Face 数据集对应关系
+
+官方 collection 中目前有 4 个 dataset repo：
+
+```text
+quentinll/lewm-pusht
+quentinll/lewm-tworooms
+quentinll/lewm-cube
+quentinll/lewm-reacher
+```
+
+对应关系：
+
+```text
+HF dataset repo              下载文件                         解压后训练配置
+quentinll/lewm-pusht         pusht_expert_train.h5.zst        data=hf_pusht
+quentinll/lewm-tworooms      tworoom.tar.zst                  data=hf_tworoom
+quentinll/lewm-cube          cube_single_expert.tar.zst       data=hf_cube
+quentinll/lewm-reacher       reacher.tar.zst                  data=hf_reacher
+```
+
+PushT 是单个 `.h5.zst` 文件，直接用 `zstd -d` 解压。TwoRoom、Cube、Reacher 是 `.tar.zst`，应使用：
+
+```bash
+tar --zstd -xvf archive.tar.zst -C /mnt/lewm
+```
+
+## 6. 新增训练数据配置
+
+PushT 配置文件：
+
+```text
+config/train/data/hf_pusht.yaml
+```
+
+内容：
+
+```yaml
+dataset:
+  num_steps: ${eval:'${wm.num_preds} + ${wm.history_size}'}
+  frameskip: 5
+  name: pusht_expert_train.h5
+  keys_to_load:
+    - pixels
+    - action
+    - proprio
+    - state
+  keys_to_cache:
+    - action
+    - proprio
+    - state
+```
+
+说明：
+
+- `name: pusht_expert_train.h5` 必须与最终解压到 `/mnt/lewm` 下的数据文件名一致。
+- `train.py` 会优先从 `LOCAL_DATASET_DIR` 读取数据；这里把 `LOCAL_DATASET_DIR` 和 `STABLEWM_HOME` 都设为 `/mnt/lewm`。
+- 训练至少需要 `pixels` 和 `action`。
+- `proprio`、`state` 常用于环境评估和 reset，不一定直接参与 LeWM loss，但建议保留。
+
+如果换成其他 Hugging Face 数据集，不能只改 dataset 名称。当前代码需要 `.h5` 或 Lance 数据，且字段需要能被 `stable_worldmodel` 读取。普通 Hugging Face parquet/json/video 数据集需要先转换成 LeWM 需要的格式。
+
+其他官方数据集也已经生成了对应配置：
+
+```text
+config/train/data/hf_tworoom.yaml
+config/train/data/hf_cube.yaml
+config/train/data/hf_reacher.yaml
+```
+
+训练命令示例：
+
+```bash
+python train.py data=hf_pusht launcher=nerc output_model_name=pusht/lewm
+python train.py data=hf_tworoom launcher=nerc output_model_name=tworoom/lewm
+python train.py data=hf_cube launcher=nerc output_model_name=cube/lewm
+python train.py data=hf_reacher launcher=nerc output_model_name=reacher/lewm
+```
+
+## 7. 新增 NERC 训练配置
+
+新增文件：
+
+```text
+config/train/launcher/nerc.yaml
+```
+
+内容：
+
+```yaml
+# @package _global_
+
+defaults:
+  - override /hydra/launcher: basic
+
+trainer:
+  accelerator: gpu
+  devices: 1
+  precision: bf16
+  max_epochs: 100
+  gradient_clip_val: 1.0
+
+loader:
+  batch_size: 64
+  num_workers: 4
+  persistent_workers: true
+  prefetch_factor: 2
+  pin_memory: true
+
+wandb:
+  enabled: false
+  config:
+    entity: lewm
+    project: lewm
+    name: ${output_model_name}
+    id: ${subdir}
+    resume: allow
+    log_model: false
+```
+
+说明：
+
+- 如果 GPU 显存足够，可以把 `loader.batch_size` 调回默认的 `128`。
+- 如果 Pod 内 DataLoader worker 不稳定，可以先把 `num_workers` 降到 `2` 或 `0`。
+- 如果使用 V100 且 `bf16` 不稳定，可以改为：
+
+```yaml
+trainer:
+  precision: 16-mixed
+```
+
+## 8. PVC YAML
+
+新增文件：
+
+```text
+deploy/openshift/pvc.yaml
+```
+
+内容：
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lewm-storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 200Gi
+```
+
+应用：
+
+```bash
+oc apply -f deploy/openshift/pvc.yaml
+```
+
+## 9. Hugging Face Token Secret
+
+如果数据集是公开的，可以不创建 token secret。
+
+如果数据集是 private 或 gated，新增文件：
+
+```text
+deploy/openshift/hf-secret.yaml
+```
+
+内容：
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hf-token
+type: Opaque
+stringData:
+  HF_TOKEN: "hf_xxx"
+```
+
+应用：
+
+```bash
+oc apply -f deploy/openshift/hf-secret.yaml
+```
+
+注意：不要把真实 token 提交到 Git 仓库。实际使用时建议用 `oc create secret`：
+
+```bash
+oc create secret generic hf-token --from-literal=HF_TOKEN=hf_xxx
+```
+
+## 10. 自定义训练镜像
+
+训练镜像至少需要包含：
+
+```text
+Python 3.10
+PyTorch / torchvision
+Lightning
+Hydra
+stable-worldmodel[train,env]
+stable-pretraining
+huggingface_hub
+zstandard 或系统 zstd
+当前 LeWM repo 代码
+```
+
+示例 Dockerfile：
+
+```dockerfile
+FROM pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime
+
+WORKDIR /workspace/le-wm-main
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    zstd \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir \
+    hydra-core \
+    lightning \
+    einops \
+    huggingface_hub \
+    zstandard \
+    "stable-worldmodel[train,env]"
+
+COPY . /workspace/le-wm-main
+
+ENV PYTHONUNBUFFERED=1
+```
+
+构建并推送：
+
+```bash
+podman build -t quay.io/YOUR_ORG/lewm-train:latest .
+podman push quay.io/YOUR_ORG/lewm-train:latest
+```
+
+如果 NERC 集群不能直接拉取你的镜像，需要配置 image pull secret。
+
+## 11. PyTorchJob YAML
+
+新增文件：
+
+```text
+deploy/openshift/lewm-train-pytorchjob.yaml
+```
+
+内容：
+
+```yaml
+apiVersion: kubeflow.org/v1
+kind: PyTorchJob
+metadata:
+  name: lewm-pusht-train
+spec:
+  pytorchReplicaSpecs:
+    Master:
+      replicas: 1
+      restartPolicy: Never
+      template:
+        spec:
+          containers:
+            - name: pytorch
+              image: quay.io/YOUR_ORG/lewm-train:latest
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/bash", "-lc"]
+              args:
+                - |
+                  set -euo pipefail
+
+                  export STABLEWM_HOME=/mnt/lewm
+                  export LOCAL_DATASET_DIR=/mnt/lewm
+                  export HF_HOME=/mnt/lewm/hf-cache
+
+                  mkdir -p /mnt/lewm/raw/lewm-pusht
+                  mkdir -p /mnt/lewm/checkpoints
+
+                  if [ ! -f /mnt/lewm/pusht_expert_train.h5 ]; then
+                    echo "Downloading LeWM PushT dataset from Hugging Face..."
+                    HF_CLI=hf
+                    if ! command -v hf >/dev/null 2>&1; then
+                      HF_CLI=huggingface-cli
+                    fi
+                    $HF_CLI download quentinll/lewm-pusht \
+                      --repo-type dataset \
+                      --local-dir /mnt/lewm/raw/lewm-pusht
+
+                    echo "Decompressing dataset..."
+                    zstd -d -f \
+                      /mnt/lewm/raw/lewm-pusht/pusht_expert_train.h5.zst \
+                      -o /mnt/lewm/pusht_expert_train.h5
+                  else
+                    echo "Dataset already exists. Skipping download."
+                  fi
+
+                  echo "Starting LeWM training..."
+                  python train.py \
+                    data=hf_pusht \
+                    launcher=nerc \
+                    output_model_name=pusht/lewm
+              envFrom:
+                - secretRef:
+                    name: hf-token
+                    optional: true
+              resources:
+                requests:
+                  cpu: "4"
+                  memory: "32Gi"
+                  nvidia.com/gpu: "1"
+                limits:
+                  cpu: "8"
+                  memory: "64Gi"
+                  nvidia.com/gpu: "1"
+              volumeMounts:
+                - name: lewm-storage
+                  mountPath: /mnt/lewm
+          volumes:
+            - name: lewm-storage
+              persistentVolumeClaim:
+                claimName: lewm-storage
+  runPolicy:
+    suspend: false
+```
+
+应用：
+
+```bash
+oc apply -f deploy/openshift/lewm-train-pytorchjob.yaml
+```
+
+查看 Pod：
+
+```bash
+oc get pods
+```
+
+查看日志：
+
+```bash
+oc logs -f pytorchjob/lewm-pusht-train
+```
+
+如果 `oc logs -f pytorchjob/...` 不可用，则先找到 master pod：
+
+```bash
+oc get pods | grep lewm-pusht-train
+oc logs -f <pod-name>
+```
+
+## 12. 训练完成后会得到什么
+
+训练完成后，PVC 中应有：
+
+```text
+/mnt/lewm/checkpoints/pusht/lewm/
+  config.json
+  weights_epoch_1.pt
+  weights_epoch_2.pt
+  ...
+  weights_epoch_100.pt
+```
+
+还可能有 Hydra / Lightning 运行目录：
+
+```text
+/mnt/lewm/checkpoints/<hydra-job-id>/
+  config.yaml
+```
+
+最重要的文件是：
+
+```text
+config.json
+weights_epoch_*.pt
+```
+
+后续测试通常指定最后一个 epoch：
+
+```text
+pusht/lewm/weights_epoch_100.pt
+```
+
+## 13. 测试训练好的模型
+
+可以新建一个测试 PyTorchJob，或者直接在同一个 Workbench / Pod 中执行：
+
+```bash
+export STABLEWM_HOME=/mnt/lewm
+export LOCAL_DATASET_DIR=/mnt/lewm
+
+python eval.py \
+  --config-name=pusht.yaml \
+  policy=pusht/lewm/weights_epoch_100.pt
+```
+
+评估会：
+
+1. 加载训练好的 LeWM 模型。
+2. 使用 `stable_worldmodel` 的 world environment。
+3. 使用 CEM 或 Adam solver 规划动作。
+4. 打印 `metrics`。
+5. 写入结果文件，例如：
+
+```text
+pusht_results.txt
+```
+
+## 14. 可选：用 Data Science Pipeline 实现周期性自主训练
+
+如果你希望它自动定期训练，而不是手动 `oc apply`，建议使用 OpenShift AI Data Science Pipelines。
+
+流程：
+
+```text
+pipeline.py
+  -> kfp compiler
+  -> lewm_train_pipeline.yaml
+  -> OpenShift AI Dashboard 导入 pipeline
+  -> 创建 recurring run / cron run
+```
+
+Pipeline 的任务可以拆成：
+
+```text
+download_dataset
+  -> train_lewm
+  -> eval_lewm
+```
+
+也可以先把三步都放在一个 container task 中，逻辑与 PyTorchJob 的 shell 脚本一致。
+
+注意：
+
+- `pipelines/lewm_train_pipeline.yaml` 应由 KFP SDK 编译生成。
+- OpenShift AI Dashboard 中可以导入 pipeline YAML。
+- 导入后可以创建 scheduled / recurring run。
+- 训练产物仍建议写入 `/mnt/lewm/checkpoints/...` 或对象存储。
+
+## 15. 常见问题
+
+### 15.1 找不到 stable_worldmodel
+
+错误：
+
+```text
+ModuleNotFoundError: No module named 'stable_worldmodel'
+```
+
+解决：
+
+```bash
+pip install "stable-worldmodel[train,env]"
+```
+
+最好把它写入自定义镜像，而不是 Pod 启动后临时安装。
+
+### 15.2 找不到数据集
+
+错误可能类似：
+
+```text
+FileNotFoundError: pusht_expert_train.h5
+```
+
+检查：
+
+```bash
+echo $STABLEWM_HOME
+ls -lh /mnt/lewm/pusht_expert_train.h5
+```
+
+确保：
+
+```text
+config/train/data/hf_pusht.yaml 中的 name
+```
+
+与实际文件名一致。
+
+### 15.3 下载重复执行
+
+PyTorchJob 中已经有判断：
+
+```bash
+if [ ! -f /mnt/lewm/pusht_expert_train.h5 ]; then
+  download...
+fi
+```
+
+只要 PVC 不删除，第二次运行会跳过下载。
+
+### 15.4 GPU 不可用
+
+检查：
+
+```bash
+nvidia-smi
+python -c "import torch; print(torch.cuda.is_available())"
+```
+
+如果不可用，检查：
+
+- namespace 是否有 GPU quota。
+- PyTorchJob 是否请求了 `nvidia.com/gpu: "1"`。
+- 镜像是否为 CUDA 镜像。
+- OpenShift AI 中是否选择了 GPU accelerator。
+
+### 15.5 bf16 不支持
+
+如果使用旧 GPU 或 bf16 报错，把 `config/train/launcher/nerc.yaml` 中：
+
+```yaml
+precision: bf16
+```
+
+改成：
+
+```yaml
+precision: 16-mixed
+```
+
+或者调试时先用：
+
+```yaml
+precision: 32
+```
+
+## 16. 最小落地清单
+
+第一次落地建议按这个顺序：
+
+1. 创建 PVC：`deploy/openshift/pvc.yaml`
+2. 构建并推送训练镜像：`quay.io/YOUR_ORG/lewm-train:latest`
+3. 新增 `config/train/data/hf_pusht.yaml`
+4. 新增 `config/train/launcher/nerc.yaml`
+5. 创建 PyTorchJob：`deploy/openshift/lewm-train-pytorchjob.yaml`
+6. `oc apply -f deploy/openshift/lewm-train-pytorchjob.yaml`
+7. 查看日志确认下载、解压、训练是否成功
+8. 在 PVC 中确认 checkpoint
+9. 运行 `eval.py` 测试模型
+10. 成功后再封装为 Data Science Pipeline 做周期训练
+
+## 17. 在 NERC OpenShift AI 中的实际操作步骤
+
+本仓库已经生成了以下 YAML 文件：
+
+```text
+config/train/data/hf_pusht.yaml
+config/train/data/hf_tworoom.yaml
+config/train/data/hf_cube.yaml
+config/train/data/hf_reacher.yaml
+config/train/launcher/nerc.yaml
+deploy/openshift/pvc.yaml
+deploy/openshift/hf-secret.example.yaml
+deploy/openshift/lewm-train-pytorchjob.yaml
+deploy/openshift/lewm-train-job.yaml
+deploy/openshift/lewm-eval-job.yaml
+```
+
+你需要手动替换的内容主要有：
+
+```text
+quay.io/YOUR_ORG/lewm-train:latest
+REPLACE_WITH_YOUR_HUGGINGFACE_TOKEN
+```
+
+如果 Hugging Face 数据集是公开的，可以不创建 `hf-token` secret。训练 YAML 中的 secret 是 `optional: true`，没有 secret 时也能启动。
+
+### 17.1 通过 NERC OpenShift AI Dashboard 操作
+
+1. 登录 NERC OpenShift AI Dashboard。
+2. 进入或创建你的 Data Science Project。
+3. 确认项目关联了正确的 NERC OpenShift allocation。
+4. 在项目中创建 Workbench，用于首次调试。
+5. Workbench 创建时选择合适的 notebook image、CPU、memory、cluster storage 和 GPU accelerator。
+6. 如果页面提供 A100、H100 或 V100 等 accelerator profile，选择与你 quota 匹配的 GPU 类型和数量。
+7. 启动 Workbench，进入 JupyterLab 或终端。
+8. 在 Workbench 中 clone 当前 LeWM repo，或者使用已经构建好的训练镜像。
+9. 在 OpenShift Web Console 中进入同一个 project / namespace。
+10. 点击顶部 `+` 或 `Import YAML`。
+11. 先导入 `deploy/openshift/pvc.yaml`。
+12. 如果需要 HF token，导入修改后的 `hf-secret.example.yaml`，或者用 `oc create secret` 创建。
+13. 优先导入 `deploy/openshift/lewm-train-pytorchjob.yaml`。
+14. 如果集群提示没有 `PyTorchJob` 这个 kind，改用 `deploy/openshift/lewm-train-job.yaml`。
+15. 在 Pods 页面查看训练 Pod 是否启动。
+16. 打开训练 Pod logs，确认出现下载、解压和 training log。
+17. 训练完成后，确认 PVC 中存在 checkpoint。
+18. 导入 `deploy/openshift/lewm-eval-job.yaml` 或在 Workbench 终端中运行 `eval.py` 测试。
+
+NERC Dashboard 的关键点是：Data Science Project 管理项目资源，Workbench 用来交互调试，OpenShift Web Console 的 `Import YAML` 用来创建 PVC、Secret、PyTorchJob 和 Job。
+
+### 17.2 通过 oc CLI 操作
+
+先登录 OpenShift：
+
+```bash
+oc login <YOUR_OPENSHIFT_API_URL> --token=<YOUR_TOKEN>
+```
+
+切换到你的 NERC project / namespace：
+
+```bash
+oc project <YOUR_PROJECT_NAMESPACE>
+```
+
+创建 PVC：
+
+```bash
+oc apply -f deploy/openshift/pvc.yaml
+```
+
+如果需要 Hugging Face token，推荐用命令创建 secret：
+
+```bash
+oc create secret generic hf-token --from-literal=HF_TOKEN=hf_xxx
+```
+
+如果你选择使用 YAML，则复制示例并替换 token：
+
+```bash
+cp deploy/openshift/hf-secret.example.yaml deploy/openshift/hf-secret.yaml
+# 编辑 deploy/openshift/hf-secret.yaml，把 REPLACE_WITH_YOUR_HUGGINGFACE_TOKEN 换成真实 token
+oc apply -f deploy/openshift/hf-secret.yaml
+```
+
+提交训练任务：
+
+```bash
+oc apply -f deploy/openshift/lewm-train-pytorchjob.yaml
+```
+
+如果你的 NERC namespace 没有 `PyTorchJob` CRD，使用普通 Kubernetes Job：
+
+```bash
+oc apply -f deploy/openshift/lewm-train-job.yaml
+```
+
+查看资源：
+
+```bash
+oc get pytorchjob
+oc get job
+oc get pods
+oc get pvc
+```
+
+查看训练日志：
+
+```bash
+oc get pods | grep lewm-pusht-train
+oc logs -f <TRAIN_POD_NAME>
+```
+
+训练完成后运行评估：
+
+```bash
+oc apply -f deploy/openshift/lewm-eval-job.yaml
+```
+
+查看评估日志：
+
+```bash
+oc get pods | grep lewm-pusht-eval
+oc logs -f <EVAL_POD_NAME>
+```
+
+如果要重新跑训练任务，先删除旧的 PyTorchJob，再重新 apply：
+
+```bash
+oc delete pytorchjob lewm-pusht-train
+oc apply -f deploy/openshift/lewm-train-pytorchjob.yaml
+```
+
+如果使用的是普通 Job：
+
+```bash
+oc delete job lewm-pusht-train
+oc apply -f deploy/openshift/lewm-train-job.yaml
+```
+
+如果要重新跑评估任务：
+
+```bash
+oc delete job lewm-pusht-eval
+oc apply -f deploy/openshift/lewm-eval-job.yaml
+```
+
+### 17.3 在 Workbench 中确认 PVC 内容
+
+如果 Workbench 也挂载了同一个 `lewm-storage` PVC，可以在终端里检查：
+
+```bash
+ls -lh /mnt/lewm
+ls -lh /mnt/lewm/checkpoints/pusht/lewm
+```
+
+应该看到：
+
+```text
+config.json
+weights_epoch_1.pt
+weights_epoch_2.pt
+...
+weights_epoch_100.pt
+```
+
+如果 Workbench 的挂载路径不是 `/mnt/lewm`，需要根据 Workbench 中实际挂载路径检查。
+
+### 17.4 修改训练资源
+
+如需调整 GPU、CPU、内存，修改：
+
+```text
+deploy/openshift/lewm-train-pytorchjob.yaml
+```
+
+重点字段：
+
+```yaml
+resources:
+  requests:
+    cpu: "4"
+    memory: "32Gi"
+    nvidia.com/gpu: "1"
+  limits:
+    cpu: "8"
+    memory: "64Gi"
+    nvidia.com/gpu: "1"
+```
+
+如需调整 epoch、batch size、precision，修改：
+
+```text
+config/train/launcher/nerc.yaml
+```
+
+重点字段：
+
+```yaml
+trainer:
+  precision: bf16
+  max_epochs: 100
+
+loader:
+  batch_size: 64
+  num_workers: 4
+```
+
+### 17.5 修改 Hugging Face 数据集
+
+当前训练 YAML 下载的是：
+
+```text
+quentinll/lewm-pusht
+```
+
+如果换成另一个 LeWM 官方数据集，需要同时改：
+
+```text
+deploy/openshift/lewm-train-pytorchjob.yaml
+config/train/data/hf_pusht.yaml
+```
+
+例如 TwoRoom：
+
+```bash
+hf download quentinll/lewm-tworooms --repo-type dataset --local-dir /mnt/lewm/raw/lewm-tworooms
+tar --zstd -xvf /mnt/lewm/raw/lewm-tworooms/tworoom.tar.zst -C /mnt/lewm
+python train.py data=hf_tworoom launcher=nerc output_model_name=tworoom/lewm
+```
+
+例如 Cube：
+
+```bash
+hf download quentinll/lewm-cube --repo-type dataset --local-dir /mnt/lewm/raw/lewm-cube
+tar --zstd -xvf /mnt/lewm/raw/lewm-cube/cube_single_expert.tar.zst -C /mnt/lewm
+python train.py data=hf_cube launcher=nerc output_model_name=cube/lewm
+```
+
+例如 Reacher：
+
+```bash
+hf download quentinll/lewm-reacher --repo-type dataset --local-dir /mnt/lewm/raw/lewm-reacher
+tar --zstd -xvf /mnt/lewm/raw/lewm-reacher/reacher.tar.zst -C /mnt/lewm
+python train.py data=hf_reacher launcher=nerc output_model_name=reacher/lewm
+```
+
+通用替换下载 repo：
+
+```bash
+hf download <HF_DATASET_REPO> --repo-type dataset --local-dir /mnt/lewm/raw/<NAME>
+```
+
+同时保证解压后的文件名和 data config 中的 `dataset.name` 一致：
+
+```yaml
+dataset:
+  name: your_dataset.h5
+```
+
+如果 Hugging Face 数据不是 LeWM 兼容的 `.h5.zst` 或 `.h5`，需要先添加数据转换步骤，把数据转换成包含 `pixels`、`action`、`episode_idx` / `step_idx` 等字段的 HDF5 或 Lance 数据。
+
+### 17.6 用 Pipeline 做自动周期训练
+
+单次 PyTorchJob 跑通后，可以把下载、训练、评估逻辑封装成 OpenShift AI Data Science Pipeline。
+
+Dashboard 路径通常是：
+
+```text
+OpenShift AI Dashboard
+  -> Data Science Project
+  -> Data Science Pipelines
+  -> Import pipeline
+  -> Runs
+  -> Schedules
+```
+
+建议 pipeline 分三步：
+
+```text
+download_dataset
+  -> train_lewm
+  -> eval_lewm
+```
+
+第一版也可以把三步放进一个 container task 中，直接复用 `deploy/openshift/lewm-train-pytorchjob.yaml` 里的 shell 逻辑。等 PyTorchJob 方式稳定后，再做 pipeline 化，排错成本会低很多。
+
+## 18. 参考资料
+
+- LeWM Hugging Face collection：https://huggingface.co/collections/quentinll/lewm
+- NERC OpenShift AI Data Science Project 文档：https://nerc-project.github.io/nerc-docs/openshift-ai/data-science-project/using-projects-the-rhoai/
+- NERC OpenShift AI 文档入口：https://nerc-project.github.io/nerc-docs/openshift-ai/
+- Red Hat OpenShift AI Data Science Pipelines 文档：https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/2.16/html-single/working_with_data_science_pipelines/index
