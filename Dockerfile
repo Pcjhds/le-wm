@@ -1,7 +1,8 @@
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+FROM registry.access.redhat.com/ubi9/python-311:latest
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONDONTWRITEBYTECODE=1 \
+USER 0
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     MUJOCO_GL=egl \
@@ -10,26 +11,20 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LOCAL_DATASET_DIR=/mnt/lewm \
     HF_HOME=/mnt/lewm/hf-cache
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    ca-certificates \
-    ffmpeg \
+RUN dnf install -y \
+    gcc \
+    gcc-c++ \
     git \
-    libegl1 \
-    libgl1 \
-    libglib2.0-0 \
-    libosmesa6 \
-    libsm6 \
-    libxext6 \
-    libxrender1 \
-    python3.10 \
-    python3.10-dev \
-    python3.10-venv \
+    glib2 \
+    libSM \
+    libXext \
+    libXrender \
+    make \
+    mesa-libEGL \
+    mesa-libGL \
     zstd \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN python3.10 -m venv /opt/venv
-ENV PATH=/opt/venv/bin:$PATH
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
 
 RUN python -m pip install --upgrade pip setuptools wheel && \
     python -m pip install \
@@ -46,8 +41,8 @@ WORKDIR /opt/app-root/src
 COPY . .
 
 RUN mkdir -p /opt/app-root/src /mnt/lewm && \
-    chgrp -R 0 /opt/app-root/src /opt/venv /mnt/lewm && \
-    chmod -R g=u /opt/app-root/src /opt/venv /mnt/lewm
+    chgrp -R 0 /opt/app-root/src /mnt/lewm && \
+    chmod -R g=u /opt/app-root/src /mnt/lewm
 
 USER 1001
 
