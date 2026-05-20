@@ -33,6 +33,82 @@ NERC OpenShift AI Data Science Project
 
 推荐先使用 `PyTorchJob` 跑通单次训练；确认无误后，再把相同逻辑封装成 OpenShift AI Data Science Pipeline，并设置 recurring / cron run 实现周期性自主训练。
 
+## 1.1 NERC OpenShift 和 OpenShift AI 的区别
+
+简单说：
+
+```text
+NERC OpenShift = 底层 Kubernetes / container 平台
+NERC OpenShift AI = 运行在 OpenShift 之上的 AI/ML 平台层
+```
+
+二者关系不是二选一，而是上下层关系。
+
+### NERC OpenShift
+
+NERC OpenShift 是 NERC 提供的 Red Hat OpenShift / OpenShift Container Platform 环境。它本质上是一个企业版 Kubernetes 平台，用来运行 container workload。
+
+在 OpenShift 中你直接管理这些资源：
+
+```text
+Project / Namespace
+Pod
+Job
+Deployment
+PVC
+Secret
+ConfigMap
+Route
+Service
+ResourceQuota
+GPU resource requests
+```
+
+如果只使用 OpenShift，你仍然可以运行 LeWM 训练。方式是创建普通 Kubernetes `Job`，让 Job 启动一个 GPU container，自动下载 Hugging Face 数据，然后执行 `python train.py`。
+
+本仓库对应文件是：
+
+```text
+deploy/openshift/lewm-train-job.yaml
+deploy/openshift/lewm-eval-job.yaml
+deploy/openshift/pvc.yaml
+deploy/openshift/hf-secret.example.yaml
+```
+
+### NERC OpenShift AI
+
+NERC OpenShift AI 是在 OpenShift 之上提供的 AI/ML 工作流平台。它通常提供更适合机器学习项目的 UI 和组件，例如：
+
+```text
+Data Science Project
+Workbench / Notebook
+Data Science Pipelines
+Model Serving
+Connections
+Storage attachment
+GPU accelerator profile
+```
+
+NERC 文档中说明，OpenShift AI 的 Data Science Project 会对应 NERC OpenShift resource allocation。也就是说，OpenShift AI 是更高层的机器学习入口，但底层创建出来的仍然是 OpenShift / Kubernetes 资源。
+
+### 对本项目的影响
+
+对 LeWM 来说，两种方式都可以：
+
+```text
+只用 OpenShift:
+  用 PVC + Secret + 普通 Job 训练/评估
+  适合最小化部署、命令行操作、没有 RHOAI pipeline 需求的情况
+
+使用 OpenShift AI:
+  用 Data Science Project + Workbench + Pipeline/PyTorchJob + Model Serving
+  适合交互调试、周期训练、多人协作和后续模型服务化
+```
+
+如果目标只是“在服务器上自动下载 Hugging Face 数据并训练”，普通 OpenShift 已经足够。
+
+如果目标是“像 MLOps 一样管理训练、评估、周期运行、模型保存、模型部署”，建议使用 OpenShift AI。
+
 ## 2. 前置条件
 
 需要具备以下条件：
@@ -90,6 +166,8 @@ export HF_HOME=/mnt/lewm/hf-cache
 本仓库已经新增这些文件：
 
 ```text
+Dockerfile
+.dockerignore
 config/train/data/hf_pusht.yaml
 config/train/data/hf_tworoom.yaml
 config/train/data/hf_cube.yaml
@@ -97,8 +175,11 @@ config/train/data/hf_reacher.yaml
 config/train/launcher/nerc.yaml
 deploy/openshift/pvc.yaml
 deploy/openshift/hf-secret.example.yaml
+deploy/openshift/github-secret.example.yaml
+deploy/openshift/lewm-buildconfig.yaml
 deploy/openshift/lewm-train-pytorchjob.yaml
 deploy/openshift/lewm-train-job.yaml
+deploy/openshift/lewm-train-from-github-job.yaml
 deploy/openshift/lewm-eval-job.yaml
 ```
 
@@ -355,6 +436,50 @@ podman push quay.io/YOUR_ORG/lewm-train:latest
 
 如果 NERC 集群不能直接拉取你的镜像，需要配置 image pull secret。
 
+本仓库现在已经提供了一个用于 NERC/OpenShift 构建训练镜像的 `Dockerfile`。它会：
+
+```text
+使用 CUDA runtime base image
+安装 Python 3.10
+安装 PyTorch CUDA wheel
+安装 stable-worldmodel[train,env]
+安装 hydra/lightning/einops/huggingface_hub/zstandard
+复制当前 LeWM 项目代码
+设置 OpenShift arbitrary UID 兼容权限
+```
+
+因此你可以不在本地构建镜像，而是在 OpenShift 中用 BuildConfig 从 GitHub 构建。
+
+对应 YAML：
+
+```text
+deploy/openshift/lewm-buildconfig.yaml
+```
+
+这个 BuildConfig 会从：
+
+```text
+https://github.com/Pcjhds/le-wm.git
+```
+
+拉取分支：
+
+```text
+yaalbert-yamlud-0519
+```
+
+然后使用仓库根目录的：
+
+```text
+Dockerfile
+```
+
+构建内部镜像：
+
+```text
+image-registry.openshift-image-registry.svc:5000/digital-twins-for-automated-process-f532cb/lewm-train:latest
+```
+
 ## 11. PyTorchJob YAML
 
 新增文件：
@@ -392,6 +517,7 @@ spec:
 
                   mkdir -p /mnt/lewm/raw/lewm-pusht
                   mkdir -p /mnt/lewm/checkpoints
+                  mkdir -p /mnt/lewm/hydra_runs
 
                   if [ ! -f /mnt/lewm/pusht_expert_train.h5 ]; then
                     echo "Downloading LeWM PushT dataset from Hugging Face..."
@@ -415,7 +541,8 @@ spec:
                   python train.py \
                     data=hf_pusht \
                     launcher=nerc \
-                    output_model_name=pusht/lewm
+                    output_model_name=pusht/lewm \
+                    hydra.run.dir=/mnt/lewm/hydra_runs/${HOSTNAME}
               envFrom:
                 - secretRef:
                     name: hf-token
@@ -508,7 +635,8 @@ export LOCAL_DATASET_DIR=/mnt/lewm
 
 python eval.py \
   --config-name=pusht.yaml \
-  policy=pusht/lewm/weights_epoch_100.pt
+  policy=pusht/lewm/weights_epoch_100.pt \
+  hydra.run.dir=/mnt/lewm/hydra_eval_runs/${HOSTNAME}
 ```
 
 评估会：
@@ -943,7 +1071,641 @@ download_dataset
 
 第一版也可以把三步放进一个 container task 中，直接复用 `deploy/openshift/lewm-train-pytorchjob.yaml` 里的 shell 逻辑。等 PyTorchJob 方式稳定后，再做 pipeline 化，排错成本会低很多。
 
-## 18. 参考资料
+## 18. 只使用 NERC OpenShift 是否可以
+
+可以。上面的要求不强依赖 OpenShift AI。只要 NERC OpenShift project / namespace 具备以下能力，就能直接运行：
+
+```text
+可以拉取你的训练镜像
+可以访问 Hugging Face
+有可用 PVC
+有 GPU node 和 GPU quota
+namespace 支持请求 nvidia.com/gpu
+```
+
+只用 OpenShift 时，推荐使用普通 Kubernetes Job，而不是 PyTorchJob 或 OpenShift AI Pipeline。
+
+需要用到的文件：
+
+```text
+deploy/openshift/pvc.yaml
+deploy/openshift/hf-secret.example.yaml
+deploy/openshift/lewm-train-job.yaml
+deploy/openshift/lewm-eval-job.yaml
+config/train/data/hf_pusht.yaml
+config/train/launcher/nerc.yaml
+```
+
+### 18.1 只用 OpenShift 的最小步骤
+
+1. 登录 OpenShift：
+
+```bash
+oc login <YOUR_OPENSHIFT_API_URL> --token=<YOUR_TOKEN>
+```
+
+2. 切换 namespace：
+
+```bash
+oc project <YOUR_PROJECT_NAMESPACE>
+```
+
+3. 创建 PVC：
+
+```bash
+oc apply -f deploy/openshift/pvc.yaml
+```
+
+4. 如果需要 Hugging Face token，创建 secret：
+
+```bash
+oc create secret generic hf-token --from-literal=HF_TOKEN=hf_xxx
+```
+
+5. 提交训练 Job：
+
+如果你已经有可用训练镜像，直接运行：
+
+```bash
+oc apply -f deploy/openshift/lewm-train-job.yaml
+```
+
+如果还没有训练镜像，先让 OpenShift 从 GitHub + Dockerfile 构建镜像：
+
+```bash
+oc apply -f deploy/openshift/lewm-buildconfig.yaml
+oc start-build lewm-train --follow
+oc apply -f deploy/openshift/lewm-train-job.yaml
+```
+
+6. 查看日志：
+
+```bash
+oc get pods | grep lewm-pusht-train
+oc logs -f <TRAIN_POD_NAME>
+```
+
+7. 训练完成后提交评估 Job：
+
+```bash
+oc apply -f deploy/openshift/lewm-eval-job.yaml
+```
+
+### 18.2 只用 OpenShift 时需要改动什么
+
+通常需要改这些内容：
+
+1. 修改训练镜像地址。
+
+文件：
+
+```text
+deploy/openshift/lewm-train-job.yaml
+deploy/openshift/lewm-eval-job.yaml
+```
+
+把：
+
+```yaml
+image: quay.io/YOUR_ORG/lewm-train:latest
+```
+
+改成你的真实镜像，例如：
+
+```yaml
+image: quay.io/my-team/lewm-train:latest
+```
+
+2. 根据 quota 调整 CPU、内存、GPU。
+
+如果 namespace 只有 1 张 GPU，保持：
+
+```yaml
+nvidia.com/gpu: "1"
+```
+
+如果没有 GPU，训练仍可在 CPU 上跑通流程，但速度会非常慢。此时需要：
+
+```yaml
+resources:
+  requests:
+    cpu: "4"
+    memory: "32Gi"
+  limits:
+    cpu: "8"
+    memory: "64Gi"
+```
+
+并把 `config/train/launcher/nerc.yaml` 中：
+
+```yaml
+trainer:
+  accelerator: gpu
+  devices: 1
+```
+
+改成：
+
+```yaml
+trainer:
+  accelerator: cpu
+  devices: 1
+```
+
+3. 如果集群 GPU resource name 不是 `nvidia.com/gpu`，需要按 NERC 项目提供的 accelerator resource name 修改。
+
+默认是：
+
+```yaml
+nvidia.com/gpu: "1"
+```
+
+4. 如果镜像是私有镜像，需要添加 image pull secret。
+
+示例：
+
+```yaml
+imagePullSecrets:
+  - name: my-registry-secret
+```
+
+放在 Pod spec 下：
+
+```yaml
+spec:
+  imagePullSecrets:
+    - name: my-registry-secret
+  containers:
+    ...
+```
+
+5. 如果 OpenShift 的 restricted security context 导致容器没有权限写工作目录，需要让镜像支持 arbitrary UID。
+
+建议在镜像里避免写 `/workspace/le-wm-main`，训练输出全部写入：
+
+```text
+/mnt/lewm
+```
+
+当前 Job 已经设置：
+
+```bash
+export STABLEWM_HOME=/mnt/lewm
+export LOCAL_DATASET_DIR=/mnt/lewm
+export HF_HOME=/mnt/lewm/hf-cache
+```
+
+如果 Hydra 仍尝试在工作目录创建输出，可以在启动命令中追加：
+
+```bash
+hydra.run.dir=/mnt/lewm/hydra_runs/${HOSTNAME}
+hydra.output_subdir=null
+```
+
+例如：
+
+```bash
+python train.py \
+  data=hf_pusht \
+  launcher=nerc \
+  output_model_name=pusht/lewm \
+  hydra.run.dir=/mnt/lewm/hydra_runs/${HOSTNAME}
+```
+
+6. 如果不使用 OpenShift AI，则不需要这些内容：
+
+```text
+Data Science Project 页面操作
+Workbench
+Data Science Pipeline
+Model Serving
+PyTorchJob
+```
+
+### 18.3 OpenShift 与 OpenShift AI 对应使用建议
+
+建议选择：
+
+```text
+只想训练一次/手动触发:
+  用 OpenShift Job
+
+想要调试 notebook、查看数据、交互运行:
+  用 OpenShift AI Workbench
+
+想要周期性自动训练:
+  用 OpenShift AI Data Science Pipeline
+
+想要把训练好的模型作为服务暴露:
+  用 OpenShift AI Model Serving，或者纯 OpenShift Deployment + Route
+```
+
+### 18.4 通过 NERC 网页设置，并从 GitHub 拉取当前项目运行
+
+如果你不想先在本地构建 `quay.io/.../lewm-train:latest` 这种自定义镜像，可以让 OpenShift Job 启动后从 GitHub 拉取当前项目代码，再安装依赖并训练。
+
+本仓库已经提供模板：
+
+```text
+deploy/openshift/lewm-train-from-github-job.yaml
+deploy/openshift/github-secret.example.yaml
+```
+
+这种方式的流程是：
+
+```text
+你把当前 project 上传到 GitHub
+  -> OpenShift Job 使用一个 PyTorch CUDA 基础镜像启动
+  -> Job 在 Pod 内 git clone GitHub repo
+  -> pip install 训练依赖
+  -> 从 Hugging Face 下载 LeWM 数据
+  -> 解压数据
+  -> python train.py
+```
+
+注意：这里仍然需要一个基础 container image，但它不需要包含你的项目代码。它只需要提供 Python、PyTorch、CUDA、pip，最好也包含 `git`。
+
+#### 18.4.1 先把当前项目上传到 GitHub
+
+在本地创建 GitHub repo 后，把当前项目推上去。仓库可以是 public，也可以是 private。
+
+最终你需要得到一个 repo URL，例如：
+
+```text
+https://github.com/Pcjhds/le-wm.git
+```
+
+如果是 private repo，需要创建 GitHub token，并在 OpenShift 里创建 secret。
+
+#### 18.4.2 在 NERC 网页中创建 PVC
+
+进入 OpenShift Web Console：
+
+```text
+Administrator 或 Developer 视图
+  -> 选择你的 Project / Namespace
+  -> Storage
+  -> PersistentVolumeClaims
+  -> Create PersistentVolumeClaim
+```
+
+或者使用 `Import YAML` 导入：
+
+```text
+deploy/openshift/pvc.yaml
+```
+
+PVC 名称应保持：
+
+```text
+lewm-storage
+```
+
+因为 Job YAML 中挂载的是这个名字。
+
+#### 18.4.3 如果 GitHub repo 是 private，创建 GitHub Secret
+
+复制：
+
+```text
+deploy/openshift/github-secret.example.yaml
+```
+
+改成：
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: github-token
+type: Opaque
+stringData:
+  GITHUB_TOKEN: "ghp_xxx"
+```
+
+然后在 NERC OpenShift 网页中：
+
+```text
+Project
+  -> Secrets
+  -> Create
+  -> From YAML
+```
+
+导入这个 Secret。
+
+如果 repo 是 public，可以跳过这一步。
+
+#### 18.4.4 如果 Hugging Face 数据需要 token，创建 HF Secret
+
+公开 LeWM 数据通常可以直接下载。如果你使用 private / gated 数据集，创建：
+
+```text
+hf-token
+```
+
+可以用：
+
+```text
+deploy/openshift/hf-secret.example.yaml
+```
+
+Secret 名称保持：
+
+```text
+hf-token
+```
+
+#### 18.4.5 修改 from-github Job YAML
+
+打开：
+
+```text
+deploy/openshift/lewm-train-from-github-job.yaml
+```
+
+至少修改 3 个地方。
+
+第一，确认基础镜像：
+
+```yaml
+image: image-registry.openshift-image-registry.svc:5000/digital-twins-for-automated-process-f532cb/world-model-rob-git:latest
+```
+
+这个值来自你在 OpenShift ImageStreams 页面看到的内部镜像：
+
+```text
+image-registry.openshift-image-registry.svc:5000/digital-twins-for-automated-process-f532cb/world-model-rob-git
+```
+
+实际在 Pod YAML 中通常需要带 tag，所以这里使用：
+
+```text
+:latest
+```
+
+如果 ImageStream 详情页显示 tag 不是 `latest`，请把 `:latest` 改成实际 tag。
+
+如果你在 OpenShift AI 里创建过 Workbench，可以在 OpenShift Web Console 中找到 Workbench 对应 Pod，进入 Pod YAML，复制其中的 `containers.image` 值。
+
+这个镜像最好满足：
+
+```text
+Python
+PyTorch
+CUDA
+pip
+git
+```
+
+如果镜像没有 `git`，这个 Job 会在 `git clone` 步骤失败。此时需要换一个包含 git 的镜像，或者回到自定义镜像方案。
+
+你当前 ImageStream 标签里曾显示类似：
+
+```text
+runtime=python
+runtime-version=3.12-minimal-ubi
+```
+
+这说明它可能只是普通 Python 3.12 minimal 镜像。LeWM README 推荐 Python 3.10，并且训练需要 PyTorch/CUDA。第一次运行时请重点检查 Pod 日志中的这些步骤：
+
+```text
+git clone 是否成功
+pip install 是否成功
+torch 是否能安装并识别 GPU
+stable_worldmodel 是否能 import
+python train.py 是否进入 training loop
+```
+
+如果失败，优先换成 NERC 提供的 PyTorch CUDA Workbench 镜像，或者构建自定义训练镜像。
+
+第二，修改 GitHub repo：
+
+```yaml
+env:
+  - name: GIT_REPO_URL
+    value: "https://github.com/Pcjhds/le-wm.git"
+  - name: GIT_REF
+    value: "yaalbert-yamlud-0519"
+```
+
+例如：
+
+```yaml
+env:
+  - name: GIT_REPO_URL
+    value: "https://github.com/Pcjhds/le-wm.git"
+  - name: GIT_REF
+    value: "yaalbert-yamlud-0519"
+```
+
+第三，根据 NERC quota 修改资源：
+
+```yaml
+resources:
+  requests:
+    cpu: "4"
+    memory: "32Gi"
+    nvidia.com/gpu: "1"
+  limits:
+    cpu: "8"
+    memory: "64Gi"
+    nvidia.com/gpu: "1"
+```
+
+如果你的 namespace 没有 GPU，删除 `nvidia.com/gpu`，并把 `config/train/launcher/nerc.yaml` 中 `accelerator` 改成 `cpu`。
+
+#### 18.4.6 在 NERC 网页中启动训练
+
+进入 OpenShift Web Console：
+
+```text
+Project / Namespace
+  -> +Add 或 Import YAML
+  -> 粘贴 deploy/openshift/lewm-train-from-github-job.yaml
+  -> Create
+```
+
+然后查看：
+
+```text
+Workloads
+  -> Pods
+  -> lewm-pusht-train-from-github-...
+  -> Logs
+```
+
+你应该能看到类似日志：
+
+```text
+Cloning public GitHub repository...
+Installing Python dependencies...
+Downloading LeWM PushT dataset from Hugging Face collection...
+Decompressing dataset...
+Starting LeWM training...
+```
+
+训练完成后，checkpoint 会在 PVC 中：
+
+```text
+/mnt/lewm/checkpoints/pusht/lewm/
+  config.json
+  weights_epoch_1.pt
+  ...
+```
+
+#### 18.4.7 这种方式的优缺点
+
+优点：
+
+```text
+不需要你先构建自定义项目镜像
+可以直接通过 NERC 网页创建 Job
+每次 Job 都能拉取 GitHub 上最新代码
+适合前期调试
+```
+
+缺点：
+
+```text
+每次启动都要 pip install，比较慢
+依赖外网稳定性
+依赖基础镜像里有 git / CUDA / PyTorch
+长期稳定训练不如自定义镜像可靠
+```
+
+建议：
+
+```text
+前期调试:
+  用 lewm-train-from-github-job.yaml
+
+后续稳定训练:
+  构建自定义镜像，再用 lewm-train-job.yaml
+```
+
+### 18.4.8 更推荐的 GitHub + Dockerfile 方式
+
+NERC 网页上的 `Import from Git` / `BuildConfig` 推荐方式，本质是：
+
+```text
+GitHub repo
+  -> Dockerfile
+  -> OpenShift BuildConfig
+  -> ImageStream
+  -> Job 使用这个 ImageStream 镜像训练
+```
+
+这和 `lewm-train-from-github-job.yaml` 不同：
+
+```text
+lewm-train-from-github-job.yaml:
+  每次 Job 启动后 git clone + pip install
+
+Dockerfile + BuildConfig:
+  先构建一次镜像，依赖都打进镜像
+  后续 Job 直接启动训练
+```
+
+更推荐后者，因为训练 Job 启动更快，也更稳定。
+
+本仓库已经提供：
+
+```text
+Dockerfile
+deploy/openshift/lewm-buildconfig.yaml
+deploy/openshift/lewm-train-job.yaml
+```
+
+网页操作路线：
+
+```text
+OpenShift Web Console
+  -> 你的 Project / Namespace
+  -> +Add / Import YAML
+  -> 导入 deploy/openshift/lewm-buildconfig.yaml
+  -> Builds
+  -> BuildConfigs
+  -> lewm-train
+  -> Start build
+  -> 等待 build 成功
+  -> +Add / Import YAML
+  -> 导入 deploy/openshift/lewm-train-job.yaml
+```
+
+构建成功后会出现 ImageStream：
+
+```text
+lewm-train:latest
+```
+
+训练 Job 中已经使用：
+
+```yaml
+image: image-registry.openshift-image-registry.svc:5000/digital-twins-for-automated-process-f532cb/lewm-train:latest
+```
+
+如果你的 namespace 名称变化，需要把这段中的 namespace 改成当前 project 名：
+
+```text
+digital-twins-for-automated-process-f532cb
+```
+
+### 18.5 不要用 Import from Git 创建 Deployment 来跑训练
+
+OpenShift 网页里的 `Import from Git` 默认会创建：
+
+```text
+BuildConfig
+Deployment
+Service
+Route
+```
+
+这套流程适合 Web app，例如 Flask/FastAPI/Node 服务。它会假设你的程序是一个长期运行的服务，并且监听某个端口，例如 `8080`。
+
+LeWM 训练不是 Web 服务，而是一次性 batch job：
+
+```text
+启动容器
+下载数据
+训练
+保存 checkpoint
+容器退出
+```
+
+因此不要在 `Import from Git` 页面里保持：
+
+```text
+Resource type = Deployment
+Target port = 8080
+Create a route
+```
+
+这些设置不会帮你训练模型，反而可能导致创建失败、Pod 反复重启，或者 Deployment 因为没有监听 8080 而被认为不健康。
+
+如果你想“网页操作 + GitHub 拉代码运行”，正确做法是：
+
+```text
+OpenShift Web Console
+  -> 你的 Project / Namespace
+  -> +Add
+  -> Import YAML
+  -> 先导入 pvc.yaml
+  -> 再导入 lewm-train-from-github-job.yaml
+```
+
+也就是说，使用：
+
+```text
+deploy/openshift/lewm-train-from-github-job.yaml
+```
+
+而不是 `Import from Git` 的 `Deployment` 创建页面。
+
+`Import from Git` 可以以后用来构建自定义镜像，但构建完成后仍然建议用 `Job` 来启动训练。
+
+## 19. 参考资料
 
 - LeWM Hugging Face collection：https://huggingface.co/collections/quentinll/lewm
 - NERC OpenShift AI Data Science Project 文档：https://nerc-project.github.io/nerc-docs/openshift-ai/data-science-project/using-projects-the-rhoai/

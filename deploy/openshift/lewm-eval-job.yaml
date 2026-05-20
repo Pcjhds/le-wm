@@ -9,7 +9,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: eval
-          image: quay.io/YOUR_ORG/lewm-train:latest
+          image: image-registry.openshift-image-registry.svc:5000/digital-twins-for-automated-process-f532cb/lewm-train:latest
           imagePullPolicy: IfNotPresent
           command: ["/bin/bash", "-lc"]
           args:
@@ -18,10 +18,12 @@ spec:
 
               export STABLEWM_HOME=/mnt/lewm
               export LOCAL_DATASET_DIR=/mnt/lewm
+              mkdir -p /mnt/lewm/hydra_eval_runs
 
               python eval.py \
                 --config-name=pusht.yaml \
-                policy=pusht/lewm/weights_epoch_100.pt
+                policy=pusht/lewm/weights_epoch_100.pt \
+                hydra.run.dir=/mnt/lewm/hydra_eval_runs/${HOSTNAME}
           resources:
             requests:
               cpu: "2"

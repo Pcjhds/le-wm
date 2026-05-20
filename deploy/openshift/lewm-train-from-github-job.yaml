@@ -1,0 +1,108 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: lewm-pusht-train-from-github
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: train
+          # Internal OpenShift image stream. Confirm that this image has Python, pip, git, and CUDA/PyTorch support.
+          image: image-registry.openshift-image-registry.svc:5000/digital-twins-for-automated-process-f532cb/world-model-rob-git:latest
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/bash", "-lc"]
+          args:
+            - |
+              set -euo pipefail
+
+              export HOME=/mnt/lewm/home
+              export PATH="${HOME}/.local/bin:${PATH}"
+              export STABLEWM_HOME=/mnt/lewm
+              export LOCAL_DATASET_DIR=/mnt/lewm
+              export HF_HOME=/mnt/lewm/hf-cache
+
+              export REPO_DIR=/mnt/lewm/work/le-wm-main
+              export GIT_REPO_URL=${GIT_REPO_URL:-https://github.com/Pcjhds/le-wm.git}
+              export GIT_REF=${GIT_REF:-yaalbert-yamlud-0519}
+
+              mkdir -p \
+                /mnt/lewm/home \
+                /mnt/lewm/work \
+                /mnt/lewm/raw/lewm-pusht \
+                /mnt/lewm/checkpoints \
+                /mnt/lewm/hydra_runs
+
+              rm -rf "${REPO_DIR}"
+
+              if [ -n "${GITHUB_TOKEN:-}" ]; then
+                echo "Cloning private GitHub repository..."
+                git -c http.extraHeader="Authorization: Bearer ${GITHUB_TOKEN}" \
+                  clone --depth 1 --branch "${GIT_REF}" "${GIT_REPO_URL}" "${REPO_DIR}"
+              else
+                echo "Cloning public GitHub repository..."
+                git clone --depth 1 --branch "${GIT_REF}" "${GIT_REPO_URL}" "${REPO_DIR}"
+              fi
+
+              cd "${REPO_DIR}"
+
+              python -m pip install --user --upgrade pip
+              python -m pip install --user --no-cache-dir \
+                hydra-core \
+                lightning \
+                einops \
+                huggingface_hub \
+                zstandard \
+                "stable-worldmodel[train,env]"
+
+              if [ ! -f /mnt/lewm/pusht_expert_train.h5 ]; then
+                echo "Downloading LeWM PushT dataset from Hugging Face collection..."
+                HF_CLI=hf
+                if ! command -v hf >/dev/null 2>&1; then
+                  HF_CLI=huggingface-cli
+                fi
+                $HF_CLI download quentinll/lewm-pusht \
+                  --repo-type dataset \
+                  --local-dir /mnt/lewm/raw/lewm-pusht
+
+                echo "Decompressing dataset with Python zstandard..."
+                python -c "from pathlib import Path; import zstandard as zstd; src=Path('/mnt/lewm/raw/lewm-pusht/pusht_expert_train.h5.zst'); dst=Path('/mnt/lewm/pusht_expert_train.h5'); dst.parent.mkdir(parents=True, exist_ok=True); fin=src.open('rb'); fout=dst.open('wb'); zstd.ZstdDecompressor().copy_stream(fin, fout); fin.close(); fout.close()"
+              else
+                echo "Dataset already exists at /mnt/lewm/pusht_expert_train.h5. Skipping download."
+              fi
+
+              echo "Starting LeWM training..."
+              python train.py \
+                data=hf_pusht \
+                launcher=nerc \
+                output_model_name=pusht/lewm \
+                hydra.run.dir=/mnt/lewm/hydra_runs/${HOSTNAME}
+          env:
+            - name: GIT_REPO_URL
+              value: "https://github.com/Pcjhds/le-wm.git"
+            - name: GIT_REF
+              value: "yaalbert-yamlud-0519"
+          envFrom:
+            - secretRef:
+                name: hf-token
+                optional: true
+            - secretRef:
+                name: github-token
+                optional: true
+          resources:
+            requests:
+              cpu: "4"
+              memory: "32Gi"
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "8"
+              memory: "64Gi"
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: lewm-storage
+              mountPath: /mnt/lewm
+      volumes:
+        - name: lewm-storage
+          persistentVolumeClaim:
+            claimName: lewm-storage

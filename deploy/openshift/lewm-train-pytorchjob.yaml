@@ -26,6 +26,7 @@ spec:
 
                   mkdir -p /mnt/lewm/raw/lewm-pusht
                   mkdir -p /mnt/lewm/checkpoints
+                  mkdir -p /mnt/lewm/hydra_runs
 
                   if [ ! -f /mnt/lewm/pusht_expert_train.h5 ]; then
                     echo "Downloading LeWM PushT dataset from Hugging Face..."
@@ -49,7 +50,8 @@ spec:
                   python train.py \
                     data=hf_pusht \
                     launcher=nerc \
-                    output_model_name=pusht/lewm
+                    output_model_name=pusht/lewm \
+                    hydra.run.dir=/mnt/lewm/hydra_runs/${HOSTNAME}
               envFrom:
                 - secretRef:
                     name: hf-token
