@@ -571,7 +571,10 @@ error: command 'swig' failed: No such file or directory
 说明 `stable-worldmodel[train,env]` 的环境依赖在安装 `box2d-py`，而 `box2d-py` 编译需要 `swig`。当前 `Dockerfile` 已经在安装 world model 依赖前加入：
 
 ```dockerfile
+dnf install -y swig
 python -m pip install "swig==4.1.1.post0"
+which swig
+swig -version
 ```
 
 修复后请重新 push 到 GitHub 分支：
@@ -581,6 +584,22 @@ yaalbert-yamlud-0519
 ```
 
 然后在 NERC 里重新 Start build。
+
+如果新的 build log 里仍然没有出现：
+
+```text
+which swig
+swig -version
+```
+
+说明 OpenShift 还在使用旧的 GitHub 内容或旧缓存。当前 BuildConfig 已经加了：
+
+```yaml
+dockerStrategy:
+  noCache: true
+```
+
+请确认 GitHub 分支 `yaalbert-yamlud-0519` 上的 `Dockerfile` 已经包含 `swig` 修复，然后重新 Start build。
 
 ## 11. PyTorchJob YAML
 

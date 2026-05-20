@@ -19,6 +19,7 @@ spec:
     type: Docker
     dockerStrategy:
       dockerfilePath: Dockerfile
+      noCache: true
   output:
     to:
       kind: ImageStreamTag

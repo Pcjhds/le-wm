@@ -37,6 +37,7 @@ objects:
         type: Docker
         dockerStrategy:
           dockerfilePath: ${DOCKERFILE_PATH}
+          noCache: true
       output:
         to:
           kind: ImageStreamTag
