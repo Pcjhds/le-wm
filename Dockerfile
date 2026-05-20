@@ -9,7 +9,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     HOME=/opt/app-root/src \
     STABLEWM_HOME=/mnt/lewm \
     LOCAL_DATASET_DIR=/mnt/lewm \
-    HF_HOME=/mnt/lewm/hf-cache
+    HF_HOME=/mnt/lewm/hf-cache \
+    SETUPTOOLS_USE_DISTUTILS=stdlib
 
 RUN dnf install -y \
     gcc \
@@ -26,7 +27,8 @@ RUN dnf install -y \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 
-RUN python -m pip install --upgrade pip setuptools wheel && \
+RUN python -m pip install --upgrade "pip<24" "setuptools==65.5.0" "wheel==0.38.4" && \
+    python -m pip install "gym==0.21.0" --no-build-isolation && \
     python -m pip install \
       torch torchvision --index-url https://download.pytorch.org/whl/cu121 && \
     python -m pip install \
