@@ -1963,7 +1963,67 @@ deploy/openshift/lewm-train-from-github-job.yaml
 
 `Import from Git` 可以以后用来构建自定义镜像，但构建完成后仍然建议用 `Job` 来启动训练。
 
-## 19. 参考资料
+## 19. 当前推荐的实际执行顺序
+
+截至这次修复后，建议你只按下面两个 YAML 走：
+
+```text
+第一步，用于创建/更新构建环境和内部镜像：
+deploy/openshift/lewm-build-direct.yaml
+
+第二步，用于真正开始训练：
+deploy/openshift/lewm-train-job.yaml
+```
+
+不要把 `lewm-train-from-github-job.yaml` 当作当前主流程。它是备用方案，作用是在 Job 启动后临时 clone GitHub 并安装依赖，启动慢，也更容易遇到依赖版本问题。
+
+网页操作顺序：
+
+```text
+NERC OpenShift Web Console
+  -> 进入 Project: digital-twins-for-automated-process-f532cb
+  -> +Add / Import YAML
+  -> 导入 deploy/openshift/lewm-build-direct.yaml
+  -> Builds / BuildConfigs
+  -> 打开 lewm-train
+  -> Start build
+  -> 等待 Build 状态变成 Complete
+  -> +Add / Import YAML
+  -> 导入 deploy/openshift/lewm-train-job.yaml
+  -> Workloads / Pods
+  -> 查看 lewm-pusht-train-xxxxx 的 logs
+```
+
+如果你修改了 `Dockerfile`、`train.py`、`config/train/...` 或任何会被复制进镜像的源码文件，必须重新执行 BuildConfig 的 `Start build`。只重新创建 Job 不会自动拿到新源码，因为 Job 运行的是已经构建好的镜像。
+
+如果你只修改了 `deploy/openshift/lewm-train-job.yaml` 里的资源、命令、环境变量、数据下载路径，则不需要重新 build 镜像；删除旧 Job 后重新导入这个 YAML 即可。
+
+这次 `lewm-pusht-train-tpgth-train.log` 的错误是：
+
+```text
+AttributeError: module 'stable_worldmodel.data' has no attribute 'load_dataset'
+```
+
+这说明训练 Pod 中仍在运行旧版 `train.py`。本地 `train.py` 已经改为兼容：
+
+```text
+优先使用 swm.data.load_dataset
+如果不存在，改用 stable_worldmodel.data.utils.load_dataset
+如果还不行，再尝试 HDF5Dataset
+```
+
+所以修复后的重新运行顺序是：
+
+```text
+1. 确认本地修改已经 push 到 GitHub branch yaalbert-yamlud-0519
+2. 在 NERC 中重新 Start build: lewm-train
+3. 确认 build log 里出现 dependency import check ok
+4. 删除旧的 lewm-pusht-train Job
+5. 重新 Import YAML: deploy/openshift/lewm-train-job.yaml
+6. 查看新的训练 Pod log
+```
+
+## 20. 参考资料
 
 - LeWM Hugging Face collection：https://huggingface.co/collections/quentinll/lewm
 - NERC OpenShift AI Data Science Project 文档：https://nerc-project.github.io/nerc-docs/openshift-ai/data-science-project/using-projects-the-rhoai/

@@ -24,9 +24,14 @@ spec:
 
               mkdir -p /mnt/lewm/raw/lewm-pusht
               mkdir -p /mnt/lewm/checkpoints
+              mkdir -p /mnt/lewm/datasets
               mkdir -p /mnt/lewm/hydra_runs
 
-              if [ ! -f /mnt/lewm/pusht_expert_train.h5 ]; then
+              if [ ! -f /mnt/lewm/datasets/pusht_expert_train.h5 ]; then
+                if [ -f /mnt/lewm/pusht_expert_train.h5 ]; then
+                  echo "Linking existing dataset into /mnt/lewm/datasets..."
+                  ln -sf /mnt/lewm/pusht_expert_train.h5 /mnt/lewm/datasets/pusht_expert_train.h5
+                else
                 echo "Downloading LeWM PushT dataset from Hugging Face..."
                 HF_CLI=hf
                 if ! command -v hf >/dev/null 2>&1; then
@@ -39,13 +44,14 @@ spec:
                 echo "Decompressing dataset..."
                 zstd -d -f \
                   /mnt/lewm/raw/lewm-pusht/pusht_expert_train.h5.zst \
-                  -o /mnt/lewm/pusht_expert_train.h5
+                    -o /mnt/lewm/datasets/pusht_expert_train.h5
+                fi
               else
-                echo "Dataset already exists at /mnt/lewm/pusht_expert_train.h5. Skipping download."
+                echo "Dataset already exists at /mnt/lewm/datasets/pusht_expert_train.h5. Skipping download."
               fi
 
               echo "Starting LeWM training..."
-              python -c "from datasets import config as hf_config; import datasets, huggingface_hub, transformers, stable_pretraining, stable_worldmodel; print('runtime dependency check ok'); print('datasets', datasets.__version__); print('huggingface_hub', huggingface_hub.__version__); print('transformers', transformers.__version__)"
+              python -c "from datasets import config as hf_config; import datasets, huggingface_hub, transformers, stable_pretraining, stable_worldmodel; from stable_worldmodel.data.utils import load_dataset as swm_load_dataset; print('runtime dependency check ok'); print('datasets', datasets.__version__); print('huggingface_hub', huggingface_hub.__version__); print('transformers', transformers.__version__)"
 
               python train.py \
                 data=hf_pusht \

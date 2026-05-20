@@ -14,6 +14,74 @@ from module import SIGReg
 from utils import get_column_normalizer, get_img_preprocessor, SaveCkptCallback
 
 
+def load_swm_dataset(dataset_name, cache_dir, dataset_cfg):
+    """Load a stable_worldmodel dataset across minor API differences."""
+    loader = getattr(swm.data, "load_dataset", None)
+    if loader is None:
+        try:
+            from stable_worldmodel.data.utils import load_dataset as loader
+        except ImportError:
+            loader = None
+
+    if loader is not None:
+        try:
+            return loader(
+                dataset_name, transform=None, cache_dir=cache_dir, **dataset_cfg
+            )
+        except FileNotFoundError:
+            pass
+
+    # Fallback for older wheels or local files mounted directly in the cache dir.
+    candidates = []
+    if cache_dir is not None:
+        candidates.extend(
+            [
+                Path(cache_dir, "datasets", dataset_name),
+                Path(cache_dir, dataset_name),
+            ]
+        )
+    candidates.append(Path(dataset_name))
+
+    for path in candidates:
+        if path.exists() and path.suffix in {".h5", ".hdf5"}:
+            return make_hdf5_dataset(path, cache_dir, dataset_cfg)
+
+    if dataset_name.endswith((".h5", ".hdf5")):
+        raise FileNotFoundError(
+            f"Could not resolve dataset {dataset_name!r}; checked: "
+            + ", ".join(str(p) for p in candidates)
+        )
+
+    return make_hdf5_dataset(dataset_name, cache_dir, dataset_cfg)
+
+
+def make_hdf5_dataset(dataset_ref, cache_dir, dataset_cfg):
+    """Instantiate HDF5Dataset across stable_worldmodel versions."""
+    attempts = [
+        lambda: swm.data.HDF5Dataset(
+            dataset_ref, transform=None, cache_dir=cache_dir, **dataset_cfg
+        ),
+        lambda: swm.data.HDF5Dataset(
+            str(dataset_ref), transform=None, cache_dir=cache_dir, **dataset_cfg
+        ),
+        lambda: swm.data.HDF5Dataset(
+            path=dataset_ref, transform=None, cache_dir=cache_dir, **dataset_cfg
+        ),
+        lambda: swm.data.HDF5Dataset(
+            name=str(dataset_ref), transform=None, cache_dir=cache_dir, **dataset_cfg
+        ),
+    ]
+
+    last_error = None
+    for attempt in attempts:
+        try:
+            return attempt()
+        except TypeError as exc:
+            last_error = exc
+
+    raise last_error
+
+
 def lejepa_forward(self, batch, stage, cfg):
     """encode observations, predict next states, compute losses."""
 
@@ -53,9 +121,7 @@ def run(cfg):
     dataset_cfg = OmegaConf.to_container(cfg.data.dataset, resolve=True)
     dataset_name = dataset_cfg.pop("name")
     cache_dir = os.environ.get("LOCAL_DATASET_DIR", None)
-    dataset = swm.data.load_dataset(
-        dataset_name, transform=None, cache_dir=cache_dir, **dataset_cfg
-    )
+    dataset = load_swm_dataset(dataset_name, cache_dir, dataset_cfg)
     transforms = [get_img_preprocessor(source='pixels', target='pixels', img_size=cfg.img_size)]
     
     with open_dict(cfg):
