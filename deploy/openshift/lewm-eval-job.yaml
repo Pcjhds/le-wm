@@ -10,7 +10,7 @@ spec:
       containers:
         - name: eval
           image: image-registry.openshift-image-registry.svc:5000/digital-twins-for-automated-process-f532cb/lewm-train:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           command: ["/bin/bash", "-lc"]
           args:
             - |

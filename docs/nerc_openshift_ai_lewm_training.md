@@ -622,6 +622,51 @@ python -c "from datasets import config as hf_config; import stable_pretraining; 
 
 这样如果依赖版本不兼容，会在镜像 build 阶段失败，而不是等到训练 Pod 启动后才失败。
 
+如果你已经重新 build 了镜像，但训练 Job 里仍然出现这个错误，通常说明 Job 还在使用旧镜像。原因是 Kubernetes/OpenShift 对 `:latest` 镜像如果设置：
+
+```yaml
+imagePullPolicy: IfNotPresent
+```
+
+可能会复用节点本地缓存的旧镜像。当前 `lewm-train-job.yaml` 和 `lewm-eval-job.yaml` 已改为：
+
+```yaml
+imagePullPolicy: Always
+```
+
+训练 Job 也会在启动训练前打印依赖版本：
+
+```text
+runtime dependency check ok
+datasets ...
+huggingface_hub ...
+transformers ...
+```
+
+如果日志里没有出现这些行，说明你运行的仍然是旧 Job YAML 或旧 Pod。
+
+如果 build 日志出现：
+
+```text
+ImportError: cannot import name 'is_offline_mode' from 'huggingface_hub'
+```
+
+说明 Hugging Face 依赖版本互相冲突：`datasets==2.14.7` 需要旧一代 `huggingface-hub<1.0`，而 build 过程中安装到的 `transformers 5.x` 需要新一代 `huggingface-hub>=1.5`。当前 `Dockerfile` 已固定为同一代兼容组合：
+
+```dockerfile
+python -m pip install --upgrade \
+  "datasets==2.14.7" \
+  "pyarrow<21" \
+  "huggingface-hub==0.36.2" \
+  "transformers<5"
+```
+
+导入检查也包括了 `transformers`：
+
+```dockerfile
+python -c "from datasets import config as hf_config; import transformers; import stable_pretraining; import stable_worldmodel; print('dependency import check ok')"
+```
+
 ## 11. PyTorchJob YAML
 
 新增文件：

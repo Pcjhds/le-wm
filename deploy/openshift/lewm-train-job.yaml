@@ -10,7 +10,7 @@ spec:
       containers:
         - name: train
           image: image-registry.openshift-image-registry.svc:5000/digital-twins-for-automated-process-f532cb/lewm-train:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           command: ["/bin/bash", "-lc"]
           args:
             - |
@@ -45,6 +45,8 @@ spec:
               fi
 
               echo "Starting LeWM training..."
+              python -c "from datasets import config as hf_config; import datasets, huggingface_hub, transformers, stable_pretraining, stable_worldmodel; print('runtime dependency check ok'); print('datasets', datasets.__version__); print('huggingface_hub', huggingface_hub.__version__); print('transformers', transformers.__version__)"
+
               python train.py \
                 data=hf_pusht \
                 launcher=nerc \
