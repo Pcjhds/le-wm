@@ -63,7 +63,7 @@ spec:
                 "pyarrow<21" \
                 "huggingface-hub==0.36.2" \
                 "transformers<5"
-              python scripts/openshift_smoke_check.py
+              PYTHONPATH="${REPO_DIR}" python scripts/openshift_smoke_check.py
 
               if [ ! -f /mnt/lewm/datasets/pusht_expert_train.h5 ]; then
                 echo "Downloading LeWM PushT dataset from Hugging Face collection..."

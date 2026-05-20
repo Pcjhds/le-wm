@@ -51,7 +51,7 @@ RUN python -m pip install --upgrade "pip<24" "setuptools==65.5.0" "wheel==0.38.4
 WORKDIR /opt/app-root/src
 COPY . .
 
-RUN python scripts/openshift_smoke_check.py
+RUN PYTHONPATH=/opt/app-root/src python scripts/openshift_smoke_check.py
 
 RUN mkdir -p /opt/app-root/src /mnt/lewm && \
     chgrp -R 0 /opt/app-root/src /mnt/lewm && \

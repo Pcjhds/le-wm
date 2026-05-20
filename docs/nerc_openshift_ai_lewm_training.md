@@ -623,10 +623,10 @@ python -c "from datasets import config as hf_config; import transformers; import
 并且在 `COPY . .` 后运行：
 
 ```dockerfile
-python scripts/openshift_smoke_check.py
+PYTHONPATH=/opt/app-root/src python scripts/openshift_smoke_check.py
 ```
 
-这个 smoke check 会创建一个很小的 HDF5 文件，模拟 `/mnt/lewm/datasets/pusht_expert_train.h5`，然后真实调用 `train.py` 里的 `load_swm_dataset()` 和列归一化逻辑。这样如果依赖版本、数据路径或 `HDF5Dataset` API 不兼容，会在镜像 build 阶段失败，而不是等到训练 Pod 启动后才失败。
+这个 smoke check 会创建一个很小的 HDF5 文件，模拟 `/mnt/lewm/datasets/pusht_expert_train.h5`，然后真实调用 `train.py` 里的 `load_swm_dataset()` 和列归一化逻辑。`PYTHONPATH=/opt/app-root/src` 用来确保脚本在 OpenShift build 容器中能导入仓库根目录的 `train.py`。这样如果依赖版本、数据路径或 `HDF5Dataset` API 不兼容，会在镜像 build 阶段失败，而不是等到训练 Pod 启动后才失败。
 
 如果你已经重新 build 了镜像，但训练 Job 里仍然出现这个错误，通常说明 Job 还在使用旧镜像。原因是 Kubernetes/OpenShift 对 `:latest` 镜像如果设置：
 
