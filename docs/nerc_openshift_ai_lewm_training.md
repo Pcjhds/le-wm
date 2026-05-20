@@ -571,7 +571,6 @@ error: command 'swig' failed: No such file or directory
 说明 `stable-worldmodel[train,env]` 的环境依赖在安装 `box2d-py`，而 `box2d-py` 编译需要 `swig`。当前 `Dockerfile` 已经在安装 world model 依赖前加入：
 
 ```dockerfile
-dnf install -y swig
 python -m pip install "swig==4.1.1.post0"
 which swig
 swig -version
@@ -600,6 +599,28 @@ dockerStrategy:
 ```
 
 请确认 GitHub 分支 `yaalbert-yamlud-0519` 上的 `Dockerfile` 已经包含 `swig` 修复，然后重新 Start build。
+
+如果训练 Job 日志出现：
+
+```text
+ImportError: cannot import name 'config' from 'datasets'
+```
+
+说明 `stable_pretraining` 与安装到镜像里的 Hugging Face `datasets` 版本不兼容。当前 `Dockerfile` 已经在安装 `stable-worldmodel[train,env]` 后显式固定：
+
+```dockerfile
+python -m pip install --upgrade \
+  "datasets==2.14.7" \
+  "pyarrow<21"
+```
+
+并在 build 阶段加入导入检查：
+
+```dockerfile
+python -c "from datasets import config as hf_config; import stable_pretraining; import stable_worldmodel; print('dependency import check ok')"
+```
+
+这样如果依赖版本不兼容，会在镜像 build 阶段失败，而不是等到训练 Pod 启动后才失败。
 
 ## 11. PyTorchJob YAML
 

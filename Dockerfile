@@ -40,7 +40,11 @@ RUN python -m pip install --upgrade "pip<24" "setuptools==65.5.0" "wheel==0.38.4
       einops \
       huggingface_hub \
       zstandard \
-      "stable-worldmodel[train,env]"
+      "stable-worldmodel[train,env]" && \
+    python -m pip install --upgrade \
+      "datasets==2.14.7" \
+      "pyarrow<21" && \
+    python -c "from datasets import config as hf_config; import stable_pretraining; import stable_worldmodel; print('dependency import check ok')"
 
 WORKDIR /opt/app-root/src
 COPY . .
