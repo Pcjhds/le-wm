@@ -46,10 +46,12 @@ RUN python -m pip install --upgrade "pip<24" "setuptools==65.5.0" "wheel==0.38.4
       "pyarrow<21" \
       "huggingface-hub==0.36.2" \
       "transformers<5" && \
-    python -c "from datasets import config as hf_config; import transformers; import stable_pretraining; import stable_worldmodel; from stable_worldmodel.data.utils import load_dataset as swm_load_dataset; print('dependency import check ok')"
+    python -c "from datasets import config as hf_config; import transformers; import stable_pretraining; import stable_worldmodel as swm; assert hasattr(swm.data, 'HDF5Dataset'); print('dependency import check ok')"
 
 WORKDIR /opt/app-root/src
 COPY . .
+
+RUN python scripts/openshift_smoke_check.py
 
 RUN mkdir -p /opt/app-root/src /mnt/lewm && \
     chgrp -R 0 /opt/app-root/src /mnt/lewm && \

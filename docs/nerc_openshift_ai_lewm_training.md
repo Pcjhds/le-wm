@@ -235,7 +235,7 @@ config/train/data/hf_pusht.yaml
 dataset:
   num_steps: ${eval:'${wm.num_preds} + ${wm.history_size}'}
   frameskip: 5
-  name: pusht_expert_train.h5
+  name: pusht_expert_train
   keys_to_load:
     - pixels
     - action
@@ -249,7 +249,7 @@ dataset:
 
 说明：
 
-- `name: pusht_expert_train.h5` 必须与最终解压到 `/mnt/lewm` 下的数据文件名一致。
+- `name: pusht_expert_train` 是 stable-worldmodel 读取数据集时使用的名字；实际文件应位于 `/mnt/lewm/datasets/pusht_expert_train.h5`。
 - `train.py` 会优先从 `LOCAL_DATASET_DIR` 读取数据；这里把 `LOCAL_DATASET_DIR` 和 `STABLEWM_HOME` 都设为 `/mnt/lewm`。
 - 训练至少需要 `pixels` 和 `action`。
 - `proprio`、`state` 常用于环境评估和 reset，不一定直接参与 LeWM loss，但建议保留。
@@ -617,10 +617,16 @@ python -m pip install --upgrade \
 并在 build 阶段加入导入检查：
 
 ```dockerfile
-python -c "from datasets import config as hf_config; import stable_pretraining; import stable_worldmodel; print('dependency import check ok')"
+python -c "from datasets import config as hf_config; import transformers; import stable_pretraining; import stable_worldmodel as swm; assert hasattr(swm.data, 'HDF5Dataset'); print('dependency import check ok')"
 ```
 
-这样如果依赖版本不兼容，会在镜像 build 阶段失败，而不是等到训练 Pod 启动后才失败。
+并且在 `COPY . .` 后运行：
+
+```dockerfile
+python scripts/openshift_smoke_check.py
+```
+
+这个 smoke check 会创建一个很小的 HDF5 文件，模拟 `/mnt/lewm/datasets/pusht_expert_train.h5`，然后真实调用 `train.py` 里的 `load_swm_dataset()` 和列归一化逻辑。这样如果依赖版本、数据路径或 `HDF5Dataset` API 不兼容，会在镜像 build 阶段失败，而不是等到训练 Pod 启动后才失败。
 
 如果你已经重新 build 了镜像，但训练 Job 里仍然出现这个错误，通常说明 Job 还在使用旧镜像。原因是 Kubernetes/OpenShift 对 `:latest` 镜像如果设置：
 
@@ -664,7 +670,7 @@ python -m pip install --upgrade \
 导入检查也包括了 `transformers`：
 
 ```dockerfile
-python -c "from datasets import config as hf_config; import transformers; import stable_pretraining; import stable_worldmodel; print('dependency import check ok')"
+python -c "from datasets import config as hf_config; import transformers; import stable_pretraining; import stable_worldmodel as swm; assert hasattr(swm.data, 'HDF5Dataset'); print('dependency import check ok')"
 ```
 
 ## 11. PyTorchJob YAML
@@ -692,7 +698,7 @@ spec:
           containers:
             - name: pytorch
               image: quay.io/YOUR_ORG/lewm-train:latest
-              imagePullPolicy: IfNotPresent
+              imagePullPolicy: Always
               command: ["/bin/bash", "-lc"]
               args:
                 - |
@@ -704,9 +710,10 @@ spec:
 
                   mkdir -p /mnt/lewm/raw/lewm-pusht
                   mkdir -p /mnt/lewm/checkpoints
+                  mkdir -p /mnt/lewm/datasets
                   mkdir -p /mnt/lewm/hydra_runs
 
-                  if [ ! -f /mnt/lewm/pusht_expert_train.h5 ]; then
+                  if [ ! -f /mnt/lewm/datasets/pusht_expert_train.h5 ]; then
                     echo "Downloading LeWM PushT dataset from Hugging Face..."
                     HF_CLI=hf
                     if ! command -v hf >/dev/null 2>&1; then
@@ -719,7 +726,7 @@ spec:
                     echo "Decompressing dataset..."
                     zstd -d -f \
                       /mnt/lewm/raw/lewm-pusht/pusht_expert_train.h5.zst \
-                      -o /mnt/lewm/pusht_expert_train.h5
+                      -o /mnt/lewm/datasets/pusht_expert_train.h5
                   else
                     echo "Dataset already exists. Skipping download."
                   fi
@@ -899,7 +906,7 @@ FileNotFoundError: pusht_expert_train.h5
 
 ```bash
 echo $STABLEWM_HOME
-ls -lh /mnt/lewm/pusht_expert_train.h5
+ls -lh /mnt/lewm/datasets/pusht_expert_train.h5
 ```
 
 确保：
@@ -908,14 +915,14 @@ ls -lh /mnt/lewm/pusht_expert_train.h5
 config/train/data/hf_pusht.yaml 中的 name
 ```
 
-与实际文件名一致。
+当前应为不带扩展名的 `pusht_expert_train`。实际 HDF5 文件放在 `/mnt/lewm/datasets/pusht_expert_train.h5`；`train.py` 也兼容旧位置 `/mnt/lewm/pusht_expert_train.h5`。
 
 ### 15.3 下载重复执行
 
 PyTorchJob 中已经有判断：
 
 ```bash
-if [ ! -f /mnt/lewm/pusht_expert_train.h5 ]; then
+if [ ! -f /mnt/lewm/datasets/pusht_expert_train.h5 ]; then
   download...
 fi
 ```
@@ -2007,9 +2014,10 @@ AttributeError: module 'stable_worldmodel.data' has no attribute 'load_dataset'
 这说明训练 Pod 中仍在运行旧版 `train.py`。本地 `train.py` 已经改为兼容：
 
 ```text
-优先使用 swm.data.load_dataset
-如果不存在，改用 stable_worldmodel.data.utils.load_dataset
-如果还不行，再尝试 HDF5Dataset
+优先检查 `/mnt/lewm/datasets/pusht_expert_train.h5` 和旧位置 `/mnt/lewm/pusht_expert_train.h5`
+如果本地文件存在，直接使用 stable_worldmodel.data.HDF5Dataset
+如果本地文件不存在，再尝试 swm.data.load_dataset
+数据文件放在 STABLEWM_HOME=/mnt/lewm 下的 datasets 子目录，文件名为 pusht_expert_train.h5
 ```
 
 所以修复后的重新运行顺序是：
@@ -2017,7 +2025,7 @@ AttributeError: module 'stable_worldmodel.data' has no attribute 'load_dataset'
 ```text
 1. 确认本地修改已经 push 到 GitHub branch yaalbert-yamlud-0519
 2. 在 NERC 中重新 Start build: lewm-train
-3. 确认 build log 里出现 dependency import check ok
+3. 确认 build log 里出现 `dependency import check ok` 和 `openshift training smoke check ok`
 4. 删除旧的 lewm-pusht-train Job
 5. 重新 Import YAML: deploy/openshift/lewm-train-job.yaml
 6. 查看新的训练 Pod log

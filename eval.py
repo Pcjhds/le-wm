@@ -13,6 +13,7 @@ from omegaconf import DictConfig, OmegaConf
 from sklearn import preprocessing
 from torchvision.transforms import v2 as transforms
 import stable_worldmodel as swm
+from train import load_swm_dataset
 
 def img_transform(cfg):
     transform = transforms.Compose(
@@ -39,11 +40,9 @@ def get_episodes_length(dataset, episodes):
 
 def get_dataset(cfg, dataset_name):
     dataset_path = Path(cfg.cache_dir or swm.data.utils.get_cache_dir())
-    dataset = swm.data.HDF5Dataset(
-        dataset_name,
-        keys_to_cache=cfg.dataset.keys_to_cache,
-        cache_dir=dataset_path,
-    )
+    dataset_cfg = OmegaConf.to_container(cfg.dataset, resolve=True)
+    dataset_cfg.pop("stats", None)
+    dataset = load_swm_dataset(dataset_name, dataset_path, dataset_cfg)
     return dataset
 
 @hydra.main(version_base=None, config_path="./config/eval", config_name="pusht")

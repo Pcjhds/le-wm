@@ -18,7 +18,13 @@ spec:
 
               export STABLEWM_HOME=/mnt/lewm
               export LOCAL_DATASET_DIR=/mnt/lewm
+              export HYDRA_FULL_ERROR=1
               mkdir -p /mnt/lewm/hydra_eval_runs
+
+              if [ ! -s /mnt/lewm/datasets/pusht_expert_train.h5 ] && [ ! -s /mnt/lewm/pusht_expert_train.h5 ]; then
+                echo "Missing PushT dataset. Run deploy/openshift/lewm-train-job.yaml first."
+                exit 1
+              fi
 
               python eval.py \
                 --config-name=pusht.yaml \

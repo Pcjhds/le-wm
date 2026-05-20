@@ -11,7 +11,7 @@ spec:
         - name: train
           # Internal OpenShift image stream. Confirm that this image has Python, pip, git, and CUDA/PyTorch support.
           image: image-registry.openshift-image-registry.svc:5000/digital-twins-for-automated-process-f532cb/world-model-rob-git:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           command: ["/bin/bash", "-lc"]
           args:
             - |
@@ -32,6 +32,7 @@ spec:
                 /mnt/lewm/work \
                 /mnt/lewm/raw/lewm-pusht \
                 /mnt/lewm/checkpoints \
+                /mnt/lewm/datasets \
                 /mnt/lewm/hydra_runs
 
               rm -rf "${REPO_DIR}"
@@ -47,7 +48,9 @@ spec:
 
               cd "${REPO_DIR}"
 
-              python -m pip install --user --upgrade pip
+              python -m pip install --user --upgrade "pip<24" "setuptools==65.5.0" "wheel==0.38.4"
+              python -m pip install --user "swig==4.1.1.post0"
+              python -m pip install --user "gym==0.21.0" --no-build-isolation
               python -m pip install --user --no-cache-dir \
                 hydra-core \
                 lightning \
@@ -55,8 +58,14 @@ spec:
                 huggingface_hub \
                 zstandard \
                 "stable-worldmodel[train,env]"
+              python -m pip install --user --upgrade \
+                "datasets==2.14.7" \
+                "pyarrow<21" \
+                "huggingface-hub==0.36.2" \
+                "transformers<5"
+              python scripts/openshift_smoke_check.py
 
-              if [ ! -f /mnt/lewm/pusht_expert_train.h5 ]; then
+              if [ ! -f /mnt/lewm/datasets/pusht_expert_train.h5 ]; then
                 echo "Downloading LeWM PushT dataset from Hugging Face collection..."
                 HF_CLI=hf
                 if ! command -v hf >/dev/null 2>&1; then
@@ -67,12 +76,18 @@ spec:
                   --local-dir /mnt/lewm/raw/lewm-pusht
 
                 echo "Decompressing dataset with Python zstandard..."
-                python -c "from pathlib import Path; import zstandard as zstd; src=Path('/mnt/lewm/raw/lewm-pusht/pusht_expert_train.h5.zst'); dst=Path('/mnt/lewm/pusht_expert_train.h5'); dst.parent.mkdir(parents=True, exist_ok=True); fin=src.open('rb'); fout=dst.open('wb'); zstd.ZstdDecompressor().copy_stream(fin, fout); fin.close(); fout.close()"
+                python -c "from pathlib import Path; import zstandard as zstd; src=Path('/mnt/lewm/raw/lewm-pusht/pusht_expert_train.h5.zst'); dst=Path('/mnt/lewm/datasets/pusht_expert_train.h5'); dst.parent.mkdir(parents=True, exist_ok=True); fin=src.open('rb'); fout=dst.open('wb'); zstd.ZstdDecompressor().copy_stream(fin, fout); fin.close(); fout.close()"
               else
-                echo "Dataset already exists at /mnt/lewm/pusht_expert_train.h5. Skipping download."
+                echo "Dataset already exists at /mnt/lewm/datasets/pusht_expert_train.h5. Skipping download."
               fi
 
+              if [ ! -e /mnt/lewm/pusht_expert_train.h5 ]; then
+                ln -sf /mnt/lewm/datasets/pusht_expert_train.h5 /mnt/lewm/pusht_expert_train.h5
+              fi
+              test -s /mnt/lewm/datasets/pusht_expert_train.h5
+
               echo "Starting LeWM training..."
+              export HYDRA_FULL_ERROR=1
               python train.py \
                 data=hf_pusht \
                 launcher=nerc \

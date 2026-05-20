@@ -13,9 +13,19 @@ from omegaconf import OmegaConf, open_dict
 from module import SIGReg
 from utils import get_column_normalizer, get_img_preprocessor, SaveCkptCallback
 
+try:
+    if not OmegaConf.has_resolver("eval"):
+        OmegaConf.register_new_resolver("eval", eval)
+except (AttributeError, ValueError):
+    pass
+
 
 def load_swm_dataset(dataset_name, cache_dir, dataset_cfg):
     """Load a stable_worldmodel dataset across minor API differences."""
+    for path in dataset_candidates(dataset_name, cache_dir):
+        if path.exists() and path.suffix in {".h5", ".hdf5"}:
+            return make_hdf5_dataset(path, cache_dir, dataset_cfg)
+
     loader = getattr(swm.data, "load_dataset", None)
     if loader is None:
         try:
@@ -28,55 +38,82 @@ def load_swm_dataset(dataset_name, cache_dir, dataset_cfg):
             return loader(
                 dataset_name, transform=None, cache_dir=cache_dir, **dataset_cfg
             )
-        except FileNotFoundError:
+        except (FileNotFoundError, ValueError):
             pass
 
-    # Fallback for older wheels or local files mounted directly in the cache dir.
-    candidates = []
-    if cache_dir is not None:
-        candidates.extend(
-            [
-                Path(cache_dir, "datasets", dataset_name),
-                Path(cache_dir, dataset_name),
-            ]
-        )
-    candidates.append(Path(dataset_name))
-
-    for path in candidates:
-        if path.exists() and path.suffix in {".h5", ".hdf5"}:
-            return make_hdf5_dataset(path, cache_dir, dataset_cfg)
-
     if dataset_name.endswith((".h5", ".hdf5")):
+        checked = ", ".join(str(path) for path in dataset_candidates(dataset_name, cache_dir))
         raise FileNotFoundError(
-            f"Could not resolve dataset {dataset_name!r}; checked: "
-            + ", ".join(str(p) for p in candidates)
+            f"Could not resolve dataset {dataset_name!r}; checked: {checked}"
         )
 
     return make_hdf5_dataset(dataset_name, cache_dir, dataset_cfg)
 
 
+def dataset_candidates(dataset_name, cache_dir):
+    """Return local HDF5 paths that stable_worldmodel versions may use."""
+    candidates = []
+    name_path = Path(dataset_name)
+
+    def add(path):
+        if path not in candidates:
+            candidates.append(path)
+
+    base_paths = []
+    if cache_dir is not None:
+        base_paths.extend(
+            [
+                Path(cache_dir, "datasets", name_path),
+                Path(cache_dir, name_path),
+            ]
+        )
+    base_paths.append(name_path)
+
+    for path in base_paths:
+        add(path)
+        if path.suffix == "":
+            add(path.with_suffix(".h5"))
+            add(path.with_suffix(".hdf5"))
+
+    return candidates
+
+
 def make_hdf5_dataset(dataset_ref, cache_dir, dataset_cfg):
     """Instantiate HDF5Dataset across stable_worldmodel versions."""
+    dataset_ref = Path(dataset_ref) if not isinstance(dataset_ref, Path) else dataset_ref
+    names = [str(dataset_ref)]
+    if dataset_ref.suffix in {".h5", ".hdf5"}:
+        names.append(dataset_ref.stem)
+        if cache_dir is not None:
+            for base in [Path(cache_dir, "datasets"), Path(cache_dir)]:
+                try:
+                    names.append(str(dataset_ref.with_suffix("").relative_to(base)))
+                except ValueError:
+                    pass
+
+    names = list(dict.fromkeys(names))
     attempts = [
-        lambda: swm.data.HDF5Dataset(
-            dataset_ref, transform=None, cache_dir=cache_dir, **dataset_cfg
-        ),
-        lambda: swm.data.HDF5Dataset(
-            str(dataset_ref), transform=None, cache_dir=cache_dir, **dataset_cfg
-        ),
         lambda: swm.data.HDF5Dataset(
             path=dataset_ref, transform=None, cache_dir=cache_dir, **dataset_cfg
         ),
-        lambda: swm.data.HDF5Dataset(
-            name=str(dataset_ref), transform=None, cache_dir=cache_dir, **dataset_cfg
-        ),
     ]
+    for name in names:
+        attempts.extend(
+            [
+                lambda name=name: swm.data.HDF5Dataset(
+                    name, transform=None, cache_dir=cache_dir, **dataset_cfg
+                ),
+                lambda name=name: swm.data.HDF5Dataset(
+                    name=str(name), transform=None, cache_dir=cache_dir, **dataset_cfg
+                ),
+            ]
+        )
 
     last_error = None
     for attempt in attempts:
         try:
             return attempt()
-        except TypeError as exc:
+        except (TypeError, FileNotFoundError) as exc:
             last_error = exc
 
     raise last_error

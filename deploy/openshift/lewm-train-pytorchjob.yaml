@@ -12,7 +12,7 @@ spec:
           containers:
             - name: pytorch
               image: quay.io/YOUR_ORG/lewm-train:latest
-              imagePullPolicy: IfNotPresent
+              imagePullPolicy: Always
               command: ["/bin/bash", "-lc"]
               args:
                 - |
@@ -26,9 +26,10 @@ spec:
 
                   mkdir -p /mnt/lewm/raw/lewm-pusht
                   mkdir -p /mnt/lewm/checkpoints
+                  mkdir -p /mnt/lewm/datasets
                   mkdir -p /mnt/lewm/hydra_runs
 
-                  if [ ! -f /mnt/lewm/pusht_expert_train.h5 ]; then
+                  if [ ! -f /mnt/lewm/datasets/pusht_expert_train.h5 ]; then
                     echo "Downloading LeWM PushT dataset from Hugging Face..."
                     HF_CLI=hf
                     if ! command -v hf >/dev/null 2>&1; then
@@ -41,12 +42,18 @@ spec:
                     echo "Decompressing dataset..."
                     zstd -d -f \
                       /mnt/lewm/raw/lewm-pusht/pusht_expert_train.h5.zst \
-                      -o /mnt/lewm/pusht_expert_train.h5
+                      -o /mnt/lewm/datasets/pusht_expert_train.h5
                   else
-                    echo "Dataset already exists at /mnt/lewm/pusht_expert_train.h5. Skipping download."
+                    echo "Dataset already exists at /mnt/lewm/datasets/pusht_expert_train.h5. Skipping download."
                   fi
 
+                  if [ ! -e /mnt/lewm/pusht_expert_train.h5 ]; then
+                    ln -sf /mnt/lewm/datasets/pusht_expert_train.h5 /mnt/lewm/pusht_expert_train.h5
+                  fi
+                  test -s /mnt/lewm/datasets/pusht_expert_train.h5
+
                   echo "Starting LeWM training..."
+                  export HYDRA_FULL_ERROR=1
                   python train.py \
                     data=hf_pusht \
                     launcher=nerc \
