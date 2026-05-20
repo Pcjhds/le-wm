@@ -23,7 +23,6 @@ RUN dnf install -y \
     make \
     mesa-libEGL \
     mesa-libGL \
-    swig \
     zstd \
     && dnf clean all \
     && rm -rf /var/cache/dnf
