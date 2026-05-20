@@ -1,0 +1,44 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: lewm-train-gpu-smoke
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: lewm-train
+          image: image-registry.openshift-image-registry.svc:5000/YOUR_PROJECT/le-wm:latest
+          imagePullPolicy: Always
+          env:
+            - name: STABLEWM_HOME
+              value: /workspace/stablewm
+            - name: PYTHONPATH
+              value: /workspace/le-wm
+            - name: WANDB_MODE
+              value: offline
+          command:
+            - python
+          args:
+            - train.py
+            - data=dmc
+            - trainer.max_epochs=1
+            - loader.batch_size=2
+            - num_workers=0
+          resources:
+            requests:
+              cpu: "8"
+              memory: 32Gi
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "8"
+              memory: 32Gi
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - name: lewm-storage
+              mountPath: /workspace/stablewm
+      volumes:
+        - name: lewm-storage
+          persistentVolumeClaim:
+            claimName: lewm-storage

@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: lewm-debug
+spec:
+  restartPolicy: Never
+  containers:
+    - name: lewm-debug
+      image: image-registry.openshift-image-registry.svc:5000/YOUR_PROJECT/le-wm:latest
+      imagePullPolicy: Always
+      env:
+        - name: STABLEWM_HOME
+          value: /workspace/stablewm
+        - name: PYTHONPATH
+          value: /workspace/le-wm
+        - name: WANDB_MODE
+          value: offline
+      command:
+        - sleep
+      args:
+        - infinity
+      volumeMounts:
+        - name: lewm-storage
+          mountPath: /workspace/stablewm
+  volumes:
+    - name: lewm-storage
+      persistentVolumeClaim:
+        claimName: lewm-storage
