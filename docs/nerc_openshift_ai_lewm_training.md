@@ -178,6 +178,7 @@ deploy/openshift/hf-secret.example.yaml
 deploy/openshift/github-secret.example.yaml
 deploy/openshift/lewm-buildconfig.yaml
 deploy/openshift/lewm-build-template.yaml
+deploy/openshift/lewm-build-direct.yaml
 deploy/openshift/lewm-train-pytorchjob.yaml
 deploy/openshift/lewm-train-job.yaml
 deploy/openshift/lewm-train-from-github-job.yaml
@@ -463,6 +464,14 @@ deploy/openshift/lewm-buildconfig.yaml
 deploy/openshift/lewm-build-template.yaml
 ```
 
+如果你只想在网页里 `Import YAML` 后马上看到 BuildConfig，建议使用：
+
+```text
+deploy/openshift/lewm-build-direct.yaml
+```
+
+它是已经展开好的普通 Kubernetes/OpenShift 对象，不需要 Template processing。
+
 这个 Template 会创建：
 
 ```text
@@ -551,6 +560,27 @@ yaalbert-yamlud-0519
 ```
 
 然后重新 Start build。
+
+如果 build 日志出现：
+
+```text
+ERROR: Failed building wheel for box2d-py
+error: command 'swig' failed: No such file or directory
+```
+
+说明 `stable-worldmodel[train,env]` 的环境依赖在安装 `box2d-py`，而 `box2d-py` 编译需要 `swig`。当前 `Dockerfile` 已经在安装 world model 依赖前加入：
+
+```dockerfile
+python -m pip install "swig==4.1.1.post0"
+```
+
+修复后请重新 push 到 GitHub 分支：
+
+```text
+yaalbert-yamlud-0519
+```
+
+然后在 NERC 里重新 Start build。
 
 ## 11. PyTorchJob YAML
 
@@ -1689,7 +1719,25 @@ deploy/openshift/lewm-buildconfig.yaml
 deploy/openshift/lewm-train-job.yaml
 ```
 
-网页操作路线：
+网页操作路线，推荐使用 direct YAML：
+
+```text
+OpenShift Web Console
+  -> 你的 Project / Namespace
+  -> +Add / Import YAML
+  -> 导入 deploy/openshift/lewm-build-direct.yaml
+  -> Builds
+  -> BuildConfigs
+  -> lewm-train
+  -> Start build
+  -> 等待 build 成功
+  -> +Add / Import YAML
+  -> 导入 deploy/openshift/lewm-train-job.yaml
+```
+
+如果使用 Template YAML，注意：直接 Import Template 只会创建 Template 资源，不会自动创建 BuildConfig。Template 需要被 process/instantiate 后才会生成对象。
+
+Template 路线：
 
 ```text
 OpenShift Web Console

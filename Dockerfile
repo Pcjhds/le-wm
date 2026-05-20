@@ -28,6 +28,7 @@ RUN dnf install -y \
     && rm -rf /var/cache/dnf
 
 RUN python -m pip install --upgrade "pip<24" "setuptools==65.5.0" "wheel==0.38.4" && \
+    python -m pip install "swig==4.1.1.post0" && \
     python -m pip install "gym==0.21.0" --no-build-isolation && \
     python -m pip install \
       torch torchvision --index-url https://download.pytorch.org/whl/cu121 && \

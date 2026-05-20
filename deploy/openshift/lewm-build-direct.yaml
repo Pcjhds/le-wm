@@ -1,0 +1,44 @@
+apiVersion: image.openshift.io/v1
+kind: ImageStream
+metadata:
+  name: lewm-train
+  labels:
+    app: lewm-train
+---
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: lewm-train
+  labels:
+    app: lewm-train
+spec:
+  runPolicy: Serial
+  source:
+    type: Git
+    git:
+      uri: https://github.com/Pcjhds/le-wm.git
+      ref: yaalbert-yamlud-0519
+    contextDir: .
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile
+  output:
+    to:
+      kind: ImageStreamTag
+      name: lewm-train:latest
+  triggers:
+    - type: ConfigChange
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lewm-storage
+  labels:
+    app: lewm-train
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 200Gi
