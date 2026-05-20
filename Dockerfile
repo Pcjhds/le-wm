@@ -43,8 +43,10 @@ RUN python -m pip install --upgrade "pip<24" "setuptools==65.5.0" "wheel==0.38.4
       "stable-worldmodel[train,env]" && \
     python -m pip install --upgrade \
       "datasets==2.14.7" \
-      "pyarrow<21" && \
-    python -c "from datasets import config as hf_config; import stable_pretraining; import stable_worldmodel; print('dependency import check ok')"
+      "pyarrow<21" \
+      "huggingface-hub==0.36.2" \
+      "transformers<5" && \
+    python -c "from datasets import config as hf_config; import transformers; import stable_pretraining; import stable_worldmodel; print('dependency import check ok')"
 
 WORKDIR /opt/app-root/src
 COPY . .
