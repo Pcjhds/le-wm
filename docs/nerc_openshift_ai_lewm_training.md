@@ -177,6 +177,7 @@ deploy/openshift/pvc.yaml
 deploy/openshift/hf-secret.example.yaml
 deploy/openshift/github-secret.example.yaml
 deploy/openshift/lewm-buildconfig.yaml
+deploy/openshift/lewm-build-template.yaml
 deploy/openshift/lewm-train-pytorchjob.yaml
 deploy/openshift/lewm-train-job.yaml
 deploy/openshift/lewm-train-from-github-job.yaml
@@ -439,8 +440,8 @@ podman push quay.io/YOUR_ORG/lewm-train:latest
 本仓库现在已经提供了一个用于 NERC/OpenShift 构建训练镜像的 `Dockerfile`。它会：
 
 ```text
-使用 CUDA runtime base image
-安装 Python 3.10
+使用 Red Hat UBI Python base image，避免 Docker Hub 匿名 pull rate limit
+使用 Python 3.11
 安装 PyTorch CUDA wheel
 安装 stable-worldmodel[train,env]
 安装 hydra/lightning/einops/huggingface_hub/zstandard
@@ -454,6 +455,29 @@ podman push quay.io/YOUR_ORG/lewm-train:latest
 
 ```text
 deploy/openshift/lewm-buildconfig.yaml
+```
+
+如果你希望按 Red Hat 文档的 Template 方式在网页中创建对象，也可以使用：
+
+```text
+deploy/openshift/lewm-build-template.yaml
+```
+
+这个 Template 会创建：
+
+```text
+ImageStream: lewm-train
+BuildConfig: lewm-train
+PVC: lewm-storage
+```
+
+它不会直接创建训练 Job，因为 Job 如果和 BuildConfig 同时创建，可能在镜像还没构建完成时就启动，导致拉取镜像失败。推荐顺序是：
+
+```text
+先用 Template 创建 ImageStream + BuildConfig + PVC
+再 Start build
+等 build Complete
+最后导入 lewm-train-job.yaml
 ```
 
 这个 BuildConfig 会从：
@@ -479,6 +503,54 @@ Dockerfile
 ```text
 image-registry.openshift-image-registry.svc:5000/digital-twins-for-automated-process-f532cb/lewm-train:latest
 ```
+
+如果 build 日志出现：
+
+```text
+toomanyrequests: You have reached your unauthenticated pull rate limit
+```
+
+说明 base image 从 Docker Hub 匿名拉取被限流。当前 `Dockerfile` 已经改为：
+
+```dockerfile
+FROM registry.access.redhat.com/ubi9/python-311:latest
+```
+
+Red Hat UBI 镜像可从 `registry.access.redhat.com` 匿名拉取，更适合 OpenShift 构建环境。GPU 训练能力通过：
+
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+```
+
+安装 PyTorch CUDA wheel 获得。运行时仍需要 Job 请求 GPU：
+
+```yaml
+nvidia.com/gpu: "1"
+```
+
+如果 build 日志出现：
+
+```text
+ERROR: Failed to build 'gym' when getting requirements to build wheel
+```
+
+通常是旧版 `gym` 与新版 `setuptools/wheel` 的兼容问题。当前 `Dockerfile` 已固定：
+
+```dockerfile
+SETUPTOOLS_USE_DISTUTILS=stdlib
+pip<24
+setuptools==65.5.0
+wheel==0.38.4
+gym==0.21.0 --no-build-isolation
+```
+
+如果你仍然在 NERC build 中看到这个错误，说明 OpenShift 仍在使用旧的 GitHub commit。请先把最新 Dockerfile push 到：
+
+```text
+yaalbert-yamlud-0519
+```
+
+然后重新 Start build。
 
 ## 11. PyTorchJob YAML
 
@@ -1623,7 +1695,7 @@ deploy/openshift/lewm-train-job.yaml
 OpenShift Web Console
   -> 你的 Project / Namespace
   -> +Add / Import YAML
-  -> 导入 deploy/openshift/lewm-buildconfig.yaml
+  -> 导入 deploy/openshift/lewm-build-template.yaml
   -> Builds
   -> BuildConfigs
   -> lewm-train
@@ -1649,6 +1721,59 @@ image: image-registry.openshift-image-registry.svc:5000/digital-twins-for-automa
 
 ```text
 digital-twins-for-automated-process-f532cb
+```
+
+如果你仍想使用非 Template 版本，也可以导入：
+
+```text
+deploy/openshift/lewm-buildconfig.yaml
+```
+
+Template 版本和非 Template 版本的核心 BuildConfig 是一样的：都显式指定了 `dockerStrategy.dockerfilePath: Dockerfile`，因此不会依赖 `Import from Git` 页面的自动检测。
+
+#### 18.4.9 Dockerfile 没被 NERC 网页检测到时怎么排查
+
+如果 `Import from Git` 页面没有检测到 Dockerfile，常见原因是：
+
+```text
+Dockerfile 还没有 push 到 GitHub
+Dockerfile 不在仓库根目录
+网页正在看默认分支，而不是 yaalbert-yamlud-0519
+Advanced Git options 没有填 branch/ref
+Build context directory 不对
+文件名不是严格的 Dockerfile
+```
+
+当前推荐不要依赖网页自动检测，而是导入：
+
+```text
+deploy/openshift/lewm-build-template.yaml
+```
+
+它已经明确写了：
+
+```yaml
+git:
+  uri: https://github.com/Pcjhds/le-wm.git
+  ref: yaalbert-yamlud-0519
+contextDir: .
+dockerStrategy:
+  dockerfilePath: Dockerfile
+```
+
+这比 `Import from Git` 自动检测更稳定。
+
+如果想用命令行确认 Template 参数：
+
+```bash
+oc process --parameters -f deploy/openshift/lewm-build-template.yaml
+```
+
+创建对象：
+
+```bash
+oc process -f deploy/openshift/lewm-build-template.yaml | oc apply -f -
+oc start-build lewm-train --follow
 ```
 
 ### 18.5 不要用 Import from Git 创建 Deployment 来跑训练

@@ -1,0 +1,99 @@
+apiVersion: template.openshift.io/v1
+kind: Template
+metadata:
+  name: lewm-build-template
+  annotations:
+    openshift.io/display-name: "LeWM Training Image Build"
+    description: "Builds the LeWM training image from GitHub by using the repository Dockerfile."
+    tags: "lewm,training,pytorch,gpu"
+labels:
+  app: ${APP_NAME}
+  template: lewm-build-template
+objects:
+  - apiVersion: image.openshift.io/v1
+    kind: ImageStream
+    metadata:
+      name: ${APP_NAME}
+      labels:
+        app: ${APP_NAME}
+
+  - apiVersion: build.openshift.io/v1
+    kind: BuildConfig
+    metadata:
+      name: ${APP_NAME}
+      labels:
+        app: ${APP_NAME}
+      annotations:
+        template.alpha.openshift.io/wait-for-ready: "true"
+    spec:
+      runPolicy: Serial
+      source:
+        type: Git
+        git:
+          uri: ${GIT_REPO_URL}
+          ref: ${GIT_REF}
+        contextDir: ${CONTEXT_DIR}
+      strategy:
+        type: Docker
+        dockerStrategy:
+          dockerfilePath: ${DOCKERFILE_PATH}
+      output:
+        to:
+          kind: ImageStreamTag
+          name: ${APP_NAME}:${IMAGE_TAG}
+      triggers:
+        - type: ConfigChange
+
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: ${PVC_NAME}
+      labels:
+        app: ${APP_NAME}
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      resources:
+        requests:
+          storage: ${PVC_SIZE}
+parameters:
+  - name: APP_NAME
+    displayName: Application name
+    description: Name for the ImageStream and BuildConfig.
+    value: lewm-train
+    required: true
+  - name: GIT_REPO_URL
+    displayName: Git repository URL
+    description: GitHub repository that contains the LeWM project and Dockerfile.
+    value: https://github.com/Pcjhds/le-wm.git
+    required: true
+  - name: GIT_REF
+    displayName: Git branch or ref
+    description: Branch, tag, or commit to build.
+    value: yaalbert-yamlud-0519
+    required: true
+  - name: CONTEXT_DIR
+    displayName: Build context directory
+    description: Directory in the repository used as the Docker build context.
+    value: .
+    required: true
+  - name: DOCKERFILE_PATH
+    displayName: Dockerfile path
+    description: Dockerfile path relative to the build context directory.
+    value: Dockerfile
+    required: true
+  - name: IMAGE_TAG
+    displayName: Image tag
+    description: Tag for the generated training image.
+    value: latest
+    required: true
+  - name: PVC_NAME
+    displayName: PVC name
+    description: Persistent volume claim used to store datasets and checkpoints.
+    value: lewm-storage
+    required: true
+  - name: PVC_SIZE
+    displayName: PVC size
+    description: Persistent storage size.
+    value: 200Gi
+    required: true
