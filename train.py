@@ -1,3 +1,5 @@
+import inspect
+import logging
 import os
 from functools import partial
 from pathlib import Path
@@ -18,6 +20,21 @@ try:
         OmegaConf.register_new_resolver("eval", eval)
 except (AttributeError, ValueError):
     pass
+
+
+def get_swm_cache_subdir(name: str) -> Path:
+    """Return a stable_worldmodel cache subdirectory across minor API versions."""
+    fn = swm.data.utils.get_cache_dir
+    try:
+        sig = inspect.signature(fn)
+        if "sub_folder" in sig.parameters:
+            return Path(fn(sub_folder=name))
+        if "subfolder" in sig.parameters:
+            return Path(fn(subfolder=name))
+    except Exception:
+        pass
+
+    return Path(fn()) / name
 
 
 def load_swm_dataset(dataset_name, cache_dir, dataset_cfg):
@@ -209,7 +226,8 @@ def run(cfg):
     ##########################
 
     run_id = cfg.get("subdir") or ""
-    run_dir = Path(swm.data.utils.get_cache_dir(sub_folder='checkpoints'), run_id)
+    run_dir = get_swm_cache_subdir("checkpoints") / run_id
+    logging.info(f"Checkpoint directory: {run_dir}")
 
     logger = None
     if cfg.wandb.enabled:
