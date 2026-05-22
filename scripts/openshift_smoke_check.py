@@ -12,9 +12,11 @@ if str(REPO_ROOT) not in sys.path:
 import h5py
 import hdf5plugin  # noqa: F401
 import numpy as np
+import stable_pretraining as spt
+import torch
 
 from train import get_swm_cache_dir, load_swm_dataset
-from utils import get_column_normalizer
+from utils import get_column_normalizer, get_img_preprocessor
 
 
 def create_tiny_hdf5(path: Path) -> None:
@@ -68,12 +70,18 @@ def main() -> None:
 
         assert len(dataset) > 0
         assert dataset.get_dim("action") == 2
+        transforms = [
+            get_img_preprocessor(source="pixels", target="pixels", img_size=16)
+        ]
+        for key in ["action", "proprio", "state"]:
+            transforms.append(get_column_normalizer(dataset, key, key))
+
+        dataset.transform = spt.data.transforms.Compose(*transforms)
         sample = dataset[0]
         for key in dataset_cfg["keys_to_load"]:
             assert key in sample, f"missing key in sample: {key}"
-
-        for key in ["action", "proprio", "state"]:
-            get_column_normalizer(dataset, key, key)
+        assert torch.is_floating_point(sample["pixels"])
+        assert sample["pixels"].shape[-3:] == (3, 16, 16)
 
     print("openshift training smoke check ok")
 
