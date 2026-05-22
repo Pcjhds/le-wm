@@ -13,7 +13,7 @@ from omegaconf import DictConfig, OmegaConf
 from sklearn import preprocessing
 from torchvision.transforms import v2 as transforms
 import stable_worldmodel as swm
-from train import load_swm_dataset
+from train import get_swm_cache_dir, load_swm_dataset
 
 def img_transform(cfg):
     transform = transforms.Compose(
@@ -39,7 +39,7 @@ def get_episodes_length(dataset, episodes):
 
 
 def get_dataset(cfg, dataset_name):
-    dataset_path = Path(cfg.cache_dir or swm.data.utils.get_cache_dir())
+    dataset_path = Path(cfg.cache_dir or get_swm_cache_dir())
     dataset_cfg = OmegaConf.to_container(cfg.dataset, resolve=True)
     dataset_cfg.pop("stats", None)
     dataset = load_swm_dataset(dataset_name, dataset_path, dataset_cfg)
@@ -99,7 +99,7 @@ def run(cfg: DictConfig):
         policy = swm.policy.RandomPolicy()
 
     results_path = (
-        Path(swm.data.utils.get_cache_dir(), cfg.policy).parent
+        Path(get_swm_cache_dir(), cfg.policy).parent
         if cfg.policy != "random"
         else Path(__file__).parent
     )

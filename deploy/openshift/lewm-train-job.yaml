@@ -27,6 +27,11 @@ spec:
               mkdir -p /mnt/lewm/datasets
               mkdir -p /mnt/lewm/hydra_runs
 
+              export PYTHONPATH="${PWD}:/opt/app-root/src:${PYTHONPATH:-}"
+              echo "Checking training image source compatibility..."
+              python -c "import inspect, train; assert hasattr(train, 'get_swm_cache_dir'), 'stale train.py: missing get_swm_cache_dir'; print('train.py source:', train.__file__); print('cache dir:', train.get_swm_cache_dir('checkpoints')); print(inspect.getsource(train.get_swm_cache_dir).splitlines()[0])"
+              python scripts/openshift_smoke_check.py
+
               if [ ! -f /mnt/lewm/datasets/pusht_expert_train.h5 ]; then
                 if [ -f /mnt/lewm/pusht_expert_train.h5 ]; then
                   echo "Linking existing root dataset into /mnt/lewm/datasets..."

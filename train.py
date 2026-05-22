@@ -78,6 +78,24 @@ def dataset_candidates(dataset_name, cache_dir):
     return candidates
 
 
+def get_swm_cache_dir(sub_folder=None):
+    """Return stable_worldmodel cache dir across get_cache_dir API versions."""
+    cache_fn = swm.data.utils.get_cache_dir
+    try:
+        cache_dir = Path(cache_fn())
+    except TypeError as exc:
+        if sub_folder is None:
+            raise
+        try:
+            return Path(cache_fn(sub_folder=sub_folder))
+        except TypeError:
+            raise exc
+
+    if sub_folder is not None:
+        cache_dir = cache_dir / sub_folder
+    return cache_dir
+
+
 def make_hdf5_dataset(dataset_ref, cache_dir, dataset_cfg):
     """Instantiate HDF5Dataset across stable_worldmodel versions."""
     dataset_ref = Path(dataset_ref) if not isinstance(dataset_ref, Path) else dataset_ref
@@ -209,7 +227,7 @@ def run(cfg):
     ##########################
 
     run_id = cfg.get("subdir") or ""
-    run_dir = Path(swm.data.utils.get_cache_dir(sub_folder='checkpoints'), run_id)
+    run_dir = get_swm_cache_dir("checkpoints") / run_id
 
     logger = None
     if cfg.wandb.enabled:
@@ -233,6 +251,7 @@ def run(cfg):
     )
 
     ckpt_path = run_dir / f"{cfg.output_model_name}_weights.ckpt"
+    ckpt_path.parent.mkdir(parents=True, exist_ok=True)
     manager = spt.Manager(
         trainer=trainer,
         module=world_model,

@@ -13,7 +13,7 @@ import h5py
 import hdf5plugin  # noqa: F401
 import numpy as np
 
-from train import load_swm_dataset
+from train import get_swm_cache_dir, load_swm_dataset
 from utils import get_column_normalizer
 
 
@@ -55,6 +55,8 @@ def main() -> None:
 
         os.environ["STABLEWM_HOME"] = str(cache_dir)
         os.environ["LOCAL_DATASET_DIR"] = str(cache_dir)
+        checkpoints_dir = get_swm_cache_dir("checkpoints")
+        assert checkpoints_dir.name == "checkpoints"
 
         dataset_cfg = {
             "num_steps": 4,
