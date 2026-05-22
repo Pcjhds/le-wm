@@ -2,11 +2,30 @@ import numpy as np
 import torch
 from stable_pretraining import data as dt
 from lightning.pytorch.callbacks import Callback
+from torchvision.transforms import v2 as transforms
+
+
+class TransformAdapter:
+    """Expose both callable and .transform APIs for transform compatibility."""
+
+    def __init__(self, fn):
+        self.fn = fn
+
+    def transform(self, x, *args, **kwargs):
+        return self.fn(x)
+
+    def __call__(self, x):
+        return self.fn(x)
+
 
 def get_img_preprocessor(source: str, target: str, img_size: int = 224):
     imagenet_stats = dt.dataset_stats.ImageNet
     to_image = dt.transforms.ToImage(**imagenet_stats, source=source, target=target)
-    resize = dt.transforms.Resize(img_size, source=source, target=target)
+    resize = dt.transforms.WrapTorchTransform(
+        TransformAdapter(transforms.Resize(img_size)),
+        source=source,
+        target=target,
+    )
     return dt.transforms.Compose(to_image, resize)
 
 
