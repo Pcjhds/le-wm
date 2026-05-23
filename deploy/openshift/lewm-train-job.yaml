@@ -1,7 +1,7 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: lewm-pusht-train
+  name: lewm-train-harry-1
 spec:
   backoffLimit: 0
   template:
@@ -9,7 +9,7 @@ spec:
       restartPolicy: Never
       containers:
         - name: train
-          image: image-registry.openshift-image-registry.svc:5000/digital-twins-for-automated-process-f532cb/lewm-train:latest
+          image: image-registry.openshift-image-registry.svc:5000/digital-twins-for-automated-process-f532cb/lewm-train-harry-1:latest
           imagePullPolicy: Always
           command: ["/bin/bash", "-lc"]
           args:
@@ -64,6 +64,16 @@ spec:
                 data=hf_pusht \
                 launcher=nerc \
                 output_model_name=pusht/lewm \
+                num_workers=2 \
+                loader.num_workers=2 \
+                loader.batch_size=8 \
+                loader.persistent_workers=true \
+                loader.prefetch_factor=2 \
+                trainer.max_epochs=1 \
+                +trainer.max_steps=20 \
+                +trainer.limit_train_batches=20 \
+                +trainer.limit_val_batches=2 \
+                +trainer.val_check_interval=10 \
                 hydra.run.dir=/mnt/lewm/hydra_runs/${HOSTNAME}
           envFrom:
             - secretRef:
@@ -81,7 +91,13 @@ spec:
           volumeMounts:
             - name: lewm-storage
               mountPath: /mnt/lewm
+            - name: dshm
+              mountPath: /dev/shm
       volumes:
         - name: lewm-storage
           persistentVolumeClaim:
-            claimName: lewm-storage
+            claimName: lewm-storage-harry-1
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 8Gi

@@ -1,0 +1,14 @@
+# Before applying this PVC, free at least 100Gi of project quota by deleting an
+# unused PVC only after confirming it is safe. The likely candidate is `storage`
+# if it is confirmed unused in the OpenShift UI.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: lewm-storage-harry-1
+spec:
+  storageClassName: ocs-external-storagecluster-ceph-rbd
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 100Gi
