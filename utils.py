@@ -1,7 +1,11 @@
+import inspect
+import json
+import logging
 import numpy as np
 import torch
 from stable_pretraining import data as dt
 from lightning.pytorch.callbacks import Callback
+from pathlib import Path
 from torchvision.transforms import v2 as transforms
 
 
@@ -50,6 +54,68 @@ def get_column_normalizer(dataset, source: str, target: str):
     std = data.std(0, keepdim=True).clone()
     return dt.transforms.WrapTorchTransform(ZScoreNormalizer(mean, std), source=source, target=target)
 
+
+def get_swm_cache_subdir(name: str) -> Path:
+    """Return a stable_worldmodel cache subdirectory across minor API versions."""
+    import stable_worldmodel as swm
+
+    candidates = [
+        getattr(getattr(swm, "data", None), "get_cache_dir", None),
+        getattr(getattr(getattr(swm, "data", None), "utils", None), "get_cache_dir", None),
+    ]
+    fn = next((candidate for candidate in candidates if candidate is not None), None)
+    if fn is None:
+        raise AttributeError("Could not find stable_worldmodel get_cache_dir")
+
+    try:
+        sig = inspect.signature(fn)
+        if "sub_folder" in sig.parameters:
+            return Path(fn(sub_folder=name))
+        if "subfolder" in sig.parameters:
+            return Path(fn(subfolder=name))
+    except Exception:
+        pass
+
+    return Path(fn()) / name
+
+
+def save_pretrained_compatible(model, run_name, config, filename):
+    """Save LeWM weights across stable_worldmodel checkpoint API versions."""
+    save_pretrained = None
+    try:
+        from stable_worldmodel.wm.utils import save_pretrained
+    except ModuleNotFoundError as exc:
+        if not (exc.name or "").startswith("stable_worldmodel.wm"):
+            raise
+    if save_pretrained is not None:
+        try:
+            return save_pretrained(
+                model,
+                run_name=run_name,
+                config=config,
+                filename=filename,
+            )
+        except TypeError as exc:
+            if "sub_folder" not in str(exc) and "subfolder" not in str(exc):
+                raise
+
+    from omegaconf import OmegaConf
+
+    ckpt_dir = get_swm_cache_subdir("checkpoints") / run_name
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    checkpoint_path = ckpt_dir / filename
+    torch.save(model.state_dict(), checkpoint_path)
+
+    if config is not None:
+        config_path = ckpt_dir / "config.json"
+        config_data = OmegaConf.to_container(config, resolve=True)
+        with config_path.open("w") as f:
+            json.dump(config_data, f, indent=2)
+
+    logging.info("Model saved to %s", checkpoint_path)
+
+
 class SaveCkptCallback(Callback):
     """Callback to save model checkpoint after each epoch using save_pretrained."""
 
@@ -70,8 +136,7 @@ class SaveCkptCallback(Callback):
                 self._save(pl_module.model, trainer.current_epoch + 1)
 
     def _save(self, model, epoch):
-        from stable_worldmodel.wm.utils import save_pretrained
-        save_pretrained(
+        save_pretrained_compatible(
             model,
             run_name=self.run_name,
             config=self.cfg,
