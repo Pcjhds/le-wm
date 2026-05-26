@@ -61,7 +61,8 @@ class SimplePushEnv(gym.Env):
         image_size: tuple[int, int] = (128, 128),
         frame_skip: int = 10,
         max_episode_steps: int = 200,
-        action_scale: float = 0.025,
+        action_scale: float = 0.04,
+        target_pos: tuple[float, float] | np.ndarray | None = None,
     ) -> None:
         if render_mode is not None and render_mode not in self.metadata["render_modes"]:
             raise ValueError(f"Unsupported render_mode={render_mode!r}")
@@ -86,18 +87,25 @@ class SimplePushEnv(gym.Env):
             obs_spaces["image"] = spaces.Box(low=0, high=255, shape=(height, width, 3), dtype=np.uint8)
         self.observation_space = spaces.Dict(obs_spaces)
 
-        self.target_pos = np.array([0.35, 0.0], dtype=np.float32)
+        self.target_pos = np.array(
+            target_pos if target_pos is not None else [0.35, 0.0],
+            dtype=np.float32,
+        )
         self.workspace_low = np.array([-0.45, -0.30], dtype=np.float32)
         self.workspace_high = np.array([0.45, 0.30], dtype=np.float32)
+        self.target_pos = np.clip(self.target_pos, self.workspace_low, self.workspace_high)
         self.ee_z = 0.045
         self._ee_pos = np.array([-0.25, 0.0, self.ee_z], dtype=np.float64)
         self._step_count = 0
 
         self._renderer: mujoco.Renderer | None = None
+        self._renderer_failed = False
         self._viewer = None
         self._viewer_failed = False
 
         self._puck_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "puck")
+        self._target_site_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, "target")
+        self.model.site_pos[self._target_site_id, :2] = self.target_pos
         self._puck_x_adr = self._joint_qpos_addr("puck_x")
         self._puck_y_adr = self._joint_qpos_addr("puck_y")
         self._puck_yaw_adr = self._joint_qpos_addr("puck_yaw")
@@ -179,11 +187,18 @@ class SimplePushEnv(gym.Env):
 
     def render(self) -> np.ndarray:
         height, width = self.image_size
-        if self._renderer is None:
-            self._renderer = mujoco.Renderer(self.model, height=height, width=width)
+        if self._renderer is None and not self._renderer_failed:
+            try:
+                self._renderer = mujoco.Renderer(self.model, height=height, width=width)
+            except Exception as exc:
+                self._renderer_failed = True
+                print(f"MuJoCo RGB renderer unavailable ({exc}). Using top-down fallback renderer.")
 
-        self._renderer.update_scene(self.data, camera="top")
-        return self._renderer.render()
+        if self._renderer is not None:
+            self._renderer.update_scene(self.data, camera="top")
+            return self._renderer.render()
+
+        return self._fallback_render()
 
     def close(self) -> None:
         if self._renderer is not None:
@@ -209,6 +224,69 @@ class SimplePushEnv(gym.Env):
             "distance_to_target": float(np.linalg.norm(object_pos - self.target_pos)),
             "step_count": self._step_count,
         }
+
+    def _fallback_render(self) -> np.ndarray:
+        height, width = self.image_size
+        image = np.full((height, width, 3), 230, dtype=np.uint8)
+
+        grid_step = max(8, min(height, width) // 8)
+        image[::grid_step, :, :] = 205
+        image[:, ::grid_step, :] = 205
+
+        target_px = self._world_to_pixel(self.target_pos)
+        object_px = self._world_to_pixel(self.data.xpos[self._puck_body_id, :2])
+        ee_px = self._world_to_pixel(self._ee_pos[:2])
+
+        self._draw_line(image, ee_px, object_px, color=(245, 135, 55), thickness=max(2, width // 80))
+        self._draw_line(image, object_px, target_px, color=(65, 155, 75), thickness=max(2, width // 90))
+        self._draw_circle(image, target_px, radius=max(7, width // 12), color=(90, 190, 95))
+        self._draw_box(image, object_px, half_size=max(7, width // 14), color=(40, 95, 230))
+        self._draw_circle(image, ee_px, radius=max(6, width // 16), color=(235, 70, 50))
+        return image
+
+    def _world_to_pixel(self, xy: np.ndarray) -> tuple[int, int]:
+        x = float(np.clip(xy[0], self.workspace_low[0], self.workspace_high[0]))
+        y = float(np.clip(xy[1], self.workspace_low[1], self.workspace_high[1]))
+        width = self.image_size[1]
+        height = self.image_size[0]
+        px = int(round((x - self.workspace_low[0]) / (self.workspace_high[0] - self.workspace_low[0]) * (width - 1)))
+        py = int(round((self.workspace_high[1] - y) / (self.workspace_high[1] - self.workspace_low[1]) * (height - 1)))
+        return px, py
+
+    @staticmethod
+    def _draw_box(image: np.ndarray, center: tuple[int, int], half_size: int, color: tuple[int, int, int]) -> None:
+        height, width = image.shape[:2]
+        cx, cy = center
+        x0 = max(0, cx - half_size)
+        x1 = min(width, cx + half_size + 1)
+        y0 = max(0, cy - half_size)
+        y1 = min(height, cy + half_size + 1)
+        image[y0:y1, x0:x1] = color
+
+    @staticmethod
+    def _draw_circle(image: np.ndarray, center: tuple[int, int], radius: int, color: tuple[int, int, int]) -> None:
+        height, width = image.shape[:2]
+        cx, cy = center
+        y, x = np.ogrid[:height, :width]
+        mask = (x - cx) ** 2 + (y - cy) ** 2 <= radius**2
+        image[mask] = color
+
+    @classmethod
+    def _draw_line(
+        cls,
+        image: np.ndarray,
+        start: tuple[int, int],
+        end: tuple[int, int],
+        color: tuple[int, int, int],
+        thickness: int = 1,
+    ) -> None:
+        x0, y0 = start
+        x1, y1 = end
+        length = max(abs(x1 - x0), abs(y1 - y0), 1)
+        xs = np.linspace(x0, x1, length + 1).round().astype(np.int64)
+        ys = np.linspace(y0, y1, length + 1).round().astype(np.int64)
+        for x, y in zip(xs, ys):
+            cls._draw_box(image, (int(x), int(y)), thickness, color)
 
     def _sync_viewer(self) -> None:
         if self._viewer_failed:

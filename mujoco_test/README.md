@@ -70,6 +70,12 @@ The physics are deliberately simple. A kinematic MuJoCo mocap body acts as the p
 python mujoco_test/collect_rollouts.py --episodes 3 --steps 50
 ```
 
+For a more visually dynamic rollout, use the persistent goal-biased random policy:
+
+```bash
+python mujoco_test/collect_rollouts.py --episodes 5 --steps 200 --policy aggressive_random --out mujoco_test/rollouts/simple_push_dynamic.npz
+```
+
 ## Preparing MuJoCo rollouts for model input
 
 ```bash
@@ -86,6 +92,18 @@ python mujoco_test/run_model_on_rollout.py --model-dir trained_model --rollout m
 
 ```bash
 python mujoco_test/evaluate_latent_prediction.py --model-dir trained_model --rollout mujoco_test/rollouts/simple_push_rollouts.npz
+```
+
+## Compare latent prediction baselines
+
+```bash
+python mujoco_test/evaluate_latent_baselines.py --model-dir trained_model --rollout mujoco_test/rollouts/simple_push_rollouts.npz
+```
+
+## Evaluate multistep latent prediction
+
+```bash
+python mujoco_test/evaluate_multistep_latent.py --target-offset 5
 ```
 
 ## Future LeWorldModel Integration
