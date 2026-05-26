@@ -18,6 +18,22 @@ If you are already inside this `mujoco_test` directory, use:
 pip install -r requirements.txt
 ```
 
+## Using pretrained files
+
+Put the downloaded pretrained files under `trained_model/`:
+
+```text
+trained_model/
+  config.json
+  weights.pt
+```
+
+Validate that the checkpoint loads into the local JEPA model:
+
+```bash
+python mujoco_test/load_pretrained_model.py --model-dir trained_model
+```
+
 ## Run the MuJoCo box test
 
 ```bash
@@ -47,6 +63,30 @@ python mujoco_test/simple_push_env.py
 - render: returns a top-down RGB image
 
 The physics are deliberately simple. A kinematic MuJoCo mocap body acts as the point end-effector and pushes a small planar block across a table.
+
+## Collect random rollouts
+
+```bash
+python mujoco_test/collect_rollouts.py --episodes 3 --steps 50
+```
+
+## Preparing MuJoCo rollouts for model input
+
+```bash
+python mujoco_test/prepare_model_inputs.py --rollout mujoco_test/rollouts/simple_push_rollouts.npz
+```
+
+## Run pretrained model on MuJoCo rollout
+
+```bash
+python mujoco_test/run_model_on_rollout.py --model-dir trained_model --rollout mujoco_test/rollouts/simple_push_rollouts.npz
+```
+
+## Evaluate latent prediction on MuJoCo rollout
+
+```bash
+python mujoco_test/evaluate_latent_prediction.py --model-dir trained_model --rollout mujoco_test/rollouts/simple_push_rollouts.npz
+```
 
 ## Future LeWorldModel Integration
 
