@@ -64,6 +64,14 @@ python mujoco_test/simple_push_env.py
 
 The physics are deliberately simple. A kinematic MuJoCo mocap body acts as the point end-effector and pushes a small planar block across a table.
 
+## Test the cube pushing environment
+
+```bash
+python mujoco_test/cube_push_env.py
+```
+
+`CubePushEnv` exposes a 25D action interface for closer compatibility with the pretrained cube checkpoint. The first two action dimensions move the pusher in x/y; dimensions 2-3 can bias the same movement; the remaining dimensions are accepted but currently reserved.
+
 ## Collect random rollouts
 
 ```bash
@@ -74,6 +82,12 @@ For a more visually dynamic rollout, use the persistent goal-biased random polic
 
 ```bash
 python mujoco_test/collect_rollouts.py --episodes 5 --steps 200 --policy aggressive_random --out mujoco_test/rollouts/simple_push_dynamic.npz
+```
+
+## Collect cube rollouts
+
+```bash
+python mujoco_test/collect_cube_rollouts.py --episodes 5 --steps 200 --policy goal_push_25d
 ```
 
 ## Preparing MuJoCo rollouts for model input
@@ -104,6 +118,12 @@ python mujoco_test/evaluate_latent_baselines.py --model-dir trained_model --roll
 
 ```bash
 python mujoco_test/evaluate_multistep_latent.py --target-offset 5
+```
+
+To evaluate the cube rollout with the pretrained model:
+
+```bash
+python mujoco_test/evaluate_multistep_latent.py --model-dir trained_model --rollout mujoco_test/rollouts/cube_push_rollouts.npz --target-offset 20
 ```
 
 ## Future LeWorldModel Integration
